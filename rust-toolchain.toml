@@ -1,0 +1,7 @@
+# Pinned development toolchain. MSRV is `rust-version` in Cargo.toml (1.99) and is
+# checked separately in CI. Formatting uses nightly rustfmt (`cargo xtask ci fmt`).
+[toolchain]
+channel    = "1.99.1"
+profile    = "default"
+components = ["rustfmt", "clippy"]
+targets    = ["thumbv7em-none-eabihf"]

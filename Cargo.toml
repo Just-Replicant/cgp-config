@@ -1,0 +1,67 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/cgp-config",
+    "crates/cgp-config-core",
+    "crates/cgp-config-value",
+    "xtask",
+]
+# Crates from later phases (providers, formats, secrets, derive, watch, schema, test)
+# are added to `members` when their phase starts. See docs/design-plan.md §5 and §18.
+
+[workspace.package]
+version      = "0.1.0-alpha.1"
+edition      = "2024"
+rust-version = "1.99"
+license      = "AGPL-3.0-or-later"
+repository   = "https://github.com/Just-Replicant/cgp-config"
+homepage     = "https://github.com/Just-Replicant/cgp-config"
+authors      = ["Just Replicant <Just-Replicant@users.noreply.github.com>"]
+keywords     = ["config", "configuration", "cgp", "settings", "no-std"]
+categories   = ["config", "no-std"]
+
+[workspace.dependencies]
+# Internal crates. Path dependencies carry a version so they can be published.
+cgp-config       = { version = "=0.1.0-alpha.1", path = "crates/cgp-config", default-features = false }
+cgp-config-core  = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-core", default-features = false }
+cgp-config-value = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-value", default-features = false }
+
+# The CGP fork. `compat-0.10` is in the fork's default set, so defaults stay off.
+# `cgp-config-core` asks for no extra feature; crates that need `alloc` add it.
+cgp-fork = { version = "1.1", default-features = false }
+
+# Third-party (all `no_std`-capable with these feature sets).
+foldhash   = { version = "0.2", default-features = false }
+indexmap   = { version = "2", default-features = false }
+serde      = { version = "1", default-features = false, features = ["alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+spin       = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
+
+# Dev-only.
+anyhow   = { version = "1" }
+proptest = { version = "1" }
+
+# A curated subset of `clippy::pedantic` (the same set cgp-fork enforces),
+# denied in CI through `-D warnings`.
+[workspace.lints.clippy]
+explicit_iter_loop                 = "warn"
+match_wildcard_for_single_variants = "warn"
+ref_option                         = "warn"
+semicolon_if_nothing_returned      = "warn"
+uninlined_format_args              = "warn"
+std_instead_of_core                = "warn"
+std_instead_of_alloc               = "warn"
+alloc_instead_of_core              = "warn"
+
+[workspace.lints.rust]
+missing_docs          = "warn"
+unsafe_code           = "forbid"
+unreachable_pub       = "warn"
+rust_2018_idioms      = { level = "warn", priority = -1 }
+unexpected_cfgs       = { level = "warn", check-cfg = ["cfg(docsrs)"] }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[profile.dev.package.proptest]
+opt-level = 2

@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+# coverage and profiling output
+/lcov.info
+*.profraw
+*.profdata
+# insta review artifacts
+*.pending-snap
+*.snap.new
+# local developer overrides (TwelveFactorLocal reads these; never commit them)
+config.local.toml
+*.local.toml

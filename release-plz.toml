@@ -1,0 +1,12 @@
+# release-plz: release PRs and crates.io publishing from main.
+[workspace]
+changelog_update = true
+git_release_enable = true
+semver_check = true
+# Internal crates are pinned with `=`; release them together.
+dependencies_update = false
+
+[[package]]
+name = "xtask"
+release = false
+publish = false
