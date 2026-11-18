@@ -13,7 +13,7 @@ use cgp_fork::prelude::*;
 use serde::de::DeserializeOwned;
 
 use crate::ConfigValue;
-use crate::de::{UnknownKey, from_value_with_unknown};
+use crate::de::{UnknownKey, from_value_with_limits};
 use crate::merge::{ArrayMerge, MergeDepth, MergeOptions, Precedence, merge};
 
 /// The empty map, as the start of the layer fold. The preset provider.
@@ -29,8 +29,9 @@ where
     }
 }
 
-/// Merges with `options` (provenance capped by the context's limits), then checks the
-/// merged tree against `max_depth` and `max_keys`.
+/// Merges with `options` (recursion depth and provenance bounded by the context's limits,
+/// so a deep tree fails with `LimitExceeded` instead of overflowing the stack), then checks
+/// the merged tree against `max_depth` and `max_keys`.
 fn merge_checked<Context>(
     context: &Context,
     base: ConfigValue,
@@ -41,7 +42,7 @@ where
     Context: CanRaiseError<ConfigError> + HasLoadLimits,
 {
     let limits = context.load_limits();
-    let options = options.with_max_provenance(limits.max_provenance);
+    let options = options.with_limits(&limits);
     let merged = merge(base, overlay, &options).map_err(Context::raise_error)?;
     merged.check_limits(&limits).map_err(Context::raise_error)?;
     Ok(merged)
@@ -156,15 +157,14 @@ impl<Context: CanReportWarning> UnknownKeyPolicy<Context> for WarnUnknownKeys {
     }
 }
 
-/// Fails the load with `ConfigError::Unknown` for the first unknown key.
+/// Fails the load with one `ConfigError::Unknown` that lists **every** unknown key, in
+/// document order, each with its origin and "did you mean" suggestion. Like validation,
+/// it aggregates, so an operator fixes all typos in one run.
 pub struct DenyUnknownKeys;
 
 impl<Context> UnknownKeyPolicy<Context> for DenyUnknownKeys {
     fn handle(_context: &Context, unknown: Vec<UnknownKey>) -> Result<(), ConfigError> {
-        match unknown.into_iter().next() {
-            Some(key) => Err(ConfigError::unknown(key.path, key.suggestion, key.meta)),
-            None => Ok(()),
-        }
+        ConfigError::unknown_keys(unknown).map_or(Ok(()), Err)
     }
 }
 
@@ -180,17 +180,22 @@ impl<Context> UnknownKeyPolicy<Context> for IgnoreUnknownKeys {
 /// Deserializes with the provenance-keeping, type-directed deserializer of this crate
 /// (see [`crate::de`]) and applies the unknown-key `Policy`. The preset provider is
 /// `SerdeWithProvenance<WarnUnknownKeys>`.
+///
+/// Sequences written as JSON text (env and CLI arrays) are parsed under the context's
+/// [`HasLoadLimits`], so they cannot exceed `max_depth` or `max_keys`.
 pub struct SerdeWithProvenance<Policy>(PhantomData<Policy>);
 
 #[cgp_impl(SerdeWithProvenance<Policy>)]
 impl<Policy, Config> ConfigDeserializer<Config>
 where
-    Self: HasConfigValueType<ConfigValue = ConfigValue> + CanRaiseError<ConfigError>,
+    Self:
+        HasConfigValueType<ConfigValue = ConfigValue> + CanRaiseError<ConfigError> + HasLoadLimits,
     Config: DeserializeOwned,
     Policy: UnknownKeyPolicy<Self>,
 {
     fn deserialize_config(&self, value: Self::ConfigValue) -> Result<Config, Self::Error> {
-        let (config, unknown) = from_value_with_unknown(&value).map_err(Self::raise_error)?;
+        let (config, unknown) =
+            from_value_with_limits(&value, &self.load_limits()).map_err(Self::raise_error)?;
         Policy::handle(self, unknown).map_err(Self::raise_error)?;
         Ok(config)
     }
