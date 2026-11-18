@@ -47,6 +47,34 @@ struct Node {
     meta: Meta,
 }
 
+impl Drop for Node {
+    /// Drops descendants iteratively, so dropping a deep tree cannot overflow the stack.
+    ///
+    /// Children this node owns alone are emptied into a work list before they drop;
+    /// shared children only lose one reference.
+    fn drop(&mut self) {
+        let mut pending: Vec<ConfigValue> = match &mut self.kind {
+            Kind::Array(elements) if elements.iter().any(ConfigValue::has_children) => {
+                core::mem::take(elements)
+            }
+            Kind::Map(map) if map.values().any(ConfigValue::has_children) => {
+                map.drain_values().collect()
+            }
+            _ => return,
+        };
+        while let Some(mut value) = pending.pop() {
+            if let Some(node) = Arc::get_mut(&mut value.node) {
+                match &mut node.kind {
+                    Kind::Array(elements) => pending.append(elements),
+                    Kind::Map(map) => pending.extend(map.drain_values()),
+                    _ => {}
+                }
+            }
+            // `value` now has no children of its own (or is shared), so its drop is shallow.
+        }
+    }
+}
+
 /// The intermediate configuration tree: a node with its [`Kind`] and [`Meta`].
 ///
 /// Nodes are reference-counted, so `clone` is one atomic increment and unchanged subtrees
@@ -171,8 +199,20 @@ impl ConfigValue {
     /// Data and metadata, without copying when this is the only reference.
     #[must_use]
     pub fn into_parts(self) -> (Kind, Meta) {
-        let node = Arc::unwrap_or_clone(self.node);
-        (node.kind, node.meta)
+        let mut node = Arc::unwrap_or_clone(self.node);
+        (
+            core::mem::replace(&mut node.kind, Kind::Null),
+            core::mem::take(&mut node.meta),
+        )
+    }
+
+    /// Whether the node is a non-empty container.
+    fn has_children(&self) -> bool {
+        match self.kind() {
+            Kind::Array(elements) => !elements.is_empty(),
+            Kind::Map(map) => !map.is_empty(),
+            _ => false,
+        }
     }
 
     /// Whether `a` and `b` are the same allocation (a shared, unchanged subtree).
