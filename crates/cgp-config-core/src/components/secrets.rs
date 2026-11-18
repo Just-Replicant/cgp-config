@@ -4,7 +4,7 @@ use cgp_fork::prelude::*;
 ///
 /// The value tree only holds references; this stage reads the secret bytes into the
 /// config's `Secret<T>` fields. `DenySecrets` is the preset provider until the secrets
-/// preset is selected. Per-scheme resolvers (`env:`, `file:`, `docker:`) are a separate,
+/// preset is selected; it is a no-op until the `secrets` feature exists. Per-scheme resolvers (`env:`, `file:`, `docker:`) are a separate,
 /// per-scheme component that arrives with the `secrets` feature.
 #[cgp_component(SecretsResolver)]
 pub trait CanResolveSecrets<Config>: HasErrorType {

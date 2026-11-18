@@ -218,6 +218,22 @@ fn stages_are_callable_one_by_one() {
 }
 
 #[test]
+fn each_load_clears_the_previous_report() {
+    let loader = loader();
+    loader.report_warning(LoadWarning::MissingProfile {
+        profile: "from an earlier load".into(),
+    });
+    assert_eq!(loader.load_report().len(), 1);
+    let _: Limits = loader.load_config().unwrap();
+    assert!(loader.load_report().is_empty());
+    loader.report_warning(LoadWarning::MissingProfile {
+        profile: "x".into(),
+    });
+    loader.clear_warnings();
+    assert!(loader.load_report().is_empty());
+}
+
+#[test]
 fn static_paths_convert_to_owned_paths() {
     const PORT: StaticKeyPath = StaticKeyPath::new(&["http", "port"]);
     assert_eq!(PORT.to_string(), "http.port");
@@ -286,6 +302,8 @@ fn default_limits_and_ignored_warnings() {
     quiet.report_warning(LoadWarning::MissingProfile {
         profile: "x".into(),
     });
+    // `IgnoreWarnings` has nothing to clear; `LoadLayered` still calls the hook.
+    quiet.clear_warnings();
     let limits: Limits = quiet.load_config().unwrap();
     assert_eq!(limits.workers, 1);
 }
