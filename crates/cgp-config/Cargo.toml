@@ -1,0 +1,49 @@
+[package]
+name                 = "cgp-config"
+description          = "Context-generic, layered, typed configuration for Rust on CGP: sources, merge, provenance, and validation wired per context at compile time."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+keywords.workspace     = true
+categories.workspace   = true
+readme               = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+# The plan's eventual default set is `std`, `derive`, `toml`; `derive` and `toml` are
+# added when their crates land (P2/P3).
+default = ["std"]
+# Std-only conveniences. Implies `alloc`.
+std = ["alloc", "cgp-config-core/std", "cgp-config-value?/std"]
+# The value tree, merge, the serde deserializer, `ConfigError`, and `CoreConfigPreset`.
+alloc = ["dep:cgp-config-value", "cgp-config-core/alloc", "cgp-fork/alloc"]
+
+# Pass-through features of the CGP fork.
+anyhow      = ["cgp-fork/anyhow"]
+eyre        = ["cgp-fork/eyre"]
+std-error   = ["cgp-fork/std-error"]
+tokio       = ["cgp-fork/tokio"]
+smol        = ["cgp-fork/smol"]
+mock        = ["cgp-fork/mock"]
+log-tracing = ["cgp-fork/log-tracing"]
+inspect     = ["cgp-fork/inspect"]
+
+[dependencies]
+cgp-config-core  = { workspace = true }
+cgp-config-value = { workspace = true, optional = true }
+cgp-fork         = { workspace = true }
+
+[dev-dependencies]
+anyhow   = { workspace = true }
+cgp-fork = { workspace = true, features = ["alloc", "anyhow"] }
+serde    = { workspace = true, features = ["derive", "std"] }
+
+[lints]
+workspace = true
