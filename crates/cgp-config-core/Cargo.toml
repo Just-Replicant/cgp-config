@@ -1,0 +1,37 @@
+[package]
+name                 = "cgp-config-core"
+description          = "Component traits, key paths, provenance, errors, and limits for cgp-config. `no_std`, optional `alloc`."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+keywords.workspace     = true
+categories.workspace   = true
+readme               = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+# Owned strings: `KeyPath`, `Origin`, `Meta`, `ConfigError`, `LoadWarning`, `LoadReport`,
+# and the format component traits.
+alloc = ["dep:spin"]
+# `std::sync::Mutex` behind `LoadReport` (otherwise a spin lock is used).
+std = ["alloc"]
+
+[dependencies]
+cgp-fork = { workspace = true }
+spin     = { workspace = true, optional = true }
+
+[dev-dependencies]
+anyhow   = { workspace = true }
+cgp-fork = { workspace = true, features = ["alloc", "anyhow"] }
+proptest = { workspace = true }
+
+[lints]
+workspace = true
