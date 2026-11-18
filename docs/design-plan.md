@@ -487,6 +487,13 @@ pub trait CanCollectLayers<Sources>: HasConfigValueType + HasErrorType {
 }
 ```
 
+> **As built (ADR-001, "Preset shape fixed before P2"):** `CanPrepareLayer` has **no**
+> `HasActiveProfile` supertrait. That getter needs `alloc` and an `active_profile: String`
+> field, which `no_std` contexts and contexts without file layers lack, and adding the
+> bound to the trait later would break every context. Only `PrepareFileLayer` requires
+> `Self: HasActiveProfile`. `CoreConfigPreset` already wires
+> `LayerPreparerComponent: UseDelegate<DefaultPreparers>` in P1.
+
 `PrepareFileLayer` (wired for `ConfigFile`, `ProfileFile`, `ConfigDir`):
 
 1. If `$version` is absent, record `LoadWarning::AssumedVersion` (the document is version 1). If `$version` is present, record it. 0.1 then removes the key so it does not become an unknown field.

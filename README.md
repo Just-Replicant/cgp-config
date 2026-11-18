@@ -19,8 +19,8 @@ production binary can wire different sources and checks with no `cfg!` sprawl an
 | Crate | Contents |
 |---|---|
 | [`cgp-config`](crates/cgp-config) | Facade: re-exports and `prelude`. Applications depend on this |
-| [`cgp-config-core`](crates/cgp-config-core) | `#![no_std]` component traits, `KeyPath`, `Origin`/`Meta` provenance, `ConfigError`, `LoadReport`/`LoadWarning`, `LoadLimits`, pipeline providers (`LoadLayered`, `CollectInOrder`, ...), `config_check!` |
-| [`cgp-config-value`](crates/cgp-config-value) | `ConfigValue` (`Arc` nodes with `Meta`), merge policies (`DeepMerge`, `ShallowReplace`, `AppendArrays`, `JoinBaseWins`, `AdjoinArrays`, `MergeArraysByKey`), the provenance-aware serde deserializer, `CoreConfigPreset` |
+| [`cgp-config-core`](crates/cgp-config-core) | `#![no_std]` component traits, `KeyPath`, `Origin`/`Meta` provenance, `ConfigError`, `LoadReport`/`LoadWarning`, `LoadLimits`, the built-in source markers, pipeline providers (`LoadLayered`, `CollectInOrder`, ...), `config_check!` |
+| [`cgp-config-value`](crates/cgp-config-value) | `ConfigValue` (`Arc` nodes with `Meta`), merge policies (`DeepMerge`, `ShallowReplace`, `AppendArrays`, `JoinBaseWins`, `AdjoinArrays`, `MergeArraysByKey`), the provenance-aware serde deserializer, `PrepareFileLayer`, `CoreConfigPreset` with its `DefaultPreparers` table |
 | `xtask` | `cargo xtask ci` and friends (not published) |
 
 The load pipeline is **collect** (for each source: load → prepare → merge onto the
@@ -37,8 +37,8 @@ use cgp_config::cgp::extra::error::RaiseFrom;
 #[derive(serde::Deserialize)]
 struct AppConfig { port: u16 }
 
-struct Defaults;      // a source marker
-struct BuiltIn;       // a provider for it
+// `Defaults` is a built-in source marker (from the prelude); `BuiltIn` serves it.
+struct BuiltIn;
 
 #[cgp_impl(BuiltIn)]
 impl SourceLoader<Defaults>
@@ -76,7 +76,14 @@ Errors carry the path, the winning origin, and what it overrode:
 http.port: expected u16, found string "http" at env APP__HTTP__PORT (overrides config/app.toml)
 cannot merge http: map from config/app.toml vs string from env APP__HTTP
 unknown key http.prot at config/app.toml; did you mean "port"?
+unknown keys (2): http.prot at config/app.toml (did you mean "port"?); nmae at config/app.toml (did you mean "name"?)
 ```
+
+Every built-in source marker (`Defaults`, `ConfigFile`, `EnvVars`, ...) has a preparer in
+the preset's `DefaultPreparers` table; a context that adds its own marker wires its own
+`UseDelegate` table, and forgetting one is a compile error. Env strings are coerced by
+the target type, so give fields concrete types: untagged enums and `#[serde(flatten)]`
+see `"8080"` as a string.
 
 Applications depend on `cgp-fork` directly as well, because the CGP macros expand to
 `::cgp_fork` paths ([ADR-001](docs/adr/0001-prototype-findings.md), finding 6).
@@ -91,8 +98,10 @@ and `cgp-config-value` and the facade build with `alloc` only. CI builds them fo
 
 ```sh
 cargo xtask ci        # fmt, clippy, tests, feature matrix, no_std, docs, cargo-deny
-cargo xtask miri      # Miri on core and value (nightly)
-cargo xtask coverage  # line-coverage gate: 95% on cgp-config-value
+cargo xtask miri      # Miri on core and value (nightly, isolation on)
+cargo xtask coverage  # line-coverage gate: 95% on cgp-config-value (core printed)
+cargo xtask semver    # cargo-semver-checks against $SEMVER_BASELINE (default origin/main)
+cargo xtask fork-main # build and test against cgp-fork's main branch
 ```
 
 Toolchain 1.99.1 is pinned in `rust-toolchain.toml` (MSRV 1.99); `fmt` and `miri` use

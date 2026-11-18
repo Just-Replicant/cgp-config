@@ -8,7 +8,7 @@ decisions that change it are recorded as ADRs in [docs/adr](docs/adr).
 * Rust 1.99.1 (pinned by `rust-toolchain.toml`; rustup installs it on first use) with the
   `thumbv7em-none-eabihf` target.
 * A nightly toolchain with `rustfmt` and `miri` for formatting and Miri.
-* `cargo install cargo-hack cargo-deny cargo-llvm-cov --locked`.
+* `cargo install cargo-hack cargo-deny cargo-llvm-cov cargo-semver-checks --locked`.
 
 ## Before opening a pull request
 
@@ -20,8 +20,11 @@ runs, in order: `fmt` (nightly rustfmt, check only), `clippy` (`-D warnings`, al
 and no default features), `test` (all features plus each feature tier), `hack`
 (`--each-feature` on the facade, `--feature-powerset` on core and value), `nostd`
 (builds for `thumbv7em-none-eabihf`), `docs` (broken intra-doc links denied), and `deny`.
-Miri (`cargo xtask miri`) and the coverage gate (`cargo xtask coverage`, 95% lines on
-`cgp-config-value`) run in their own CI jobs.
+Miri (`cargo xtask miri`, with isolation on and proptest failure persistence off), the
+coverage gate (`cargo xtask coverage`, 95% lines on `cgp-config-value`; core is printed,
+not gated), and `cargo xtask semver` (cargo-semver-checks against the PR base; advisory
+until 0.1.0) run in their own CI jobs. The nightly workflow also runs
+`cargo xtask fork-main`, which builds and tests against `cgp-fork`'s main branch.
 
 ## Rules of the code base
 
@@ -33,6 +36,8 @@ Miri (`cargo xtask miri`) and the coverage gate (`cargo xtask coverage`, 95% lin
   `Debug`, not in warnings.
 * Contexts with parametric components use `#[unchecked]` plus `config_check!`
   (ADR-001, finding 1).
+* Tests must not depend on the host (files, clock, environment): Miri runs with
+  isolation on.
 * Add a CHANGELOG entry under *Unreleased* for user-visible changes.
 
 ## License

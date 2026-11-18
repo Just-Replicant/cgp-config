@@ -2,6 +2,8 @@
 
 * Status: Accepted
 * Date: 2026-11-17
+* Amended: 2026-11-18 (section "Preset shape fixed before P2", review fixes before
+  `CoreConfigPreset` freezes)
 * Phase: P0 (spike); the findings marked *new* came from building P1
 * Design plan: [`docs/design-plan.md`](../design-plan.md) (§1.3, §1.4, Appendix A)
 
@@ -119,6 +121,47 @@ layer) → interpolate (opt-in only) → deserialize → resolve secrets → val
   derive), duration and byte-size parsers (P3), `LoadReport::fingerprint` (P4), and
   `from_toml_str` / `from_json_str` (P2/P3). The tracing/no-op logger wiring of §12 lands
   with the first providers that log (P2).
+
+## Preset shape fixed before P2
+
+The plan's rule is that a behavior change ships as a new preset type, so the shape of
+`CoreConfigPreset` is finished before P2 freezes it.
+
+* **Preparers are a `UseDelegate` table now.** `CoreConfigPreset` wires
+  `LayerPreparerComponent: UseDelegate<DefaultPreparers>` (plan §6.15), not a blanket
+  `IdentityLayer`. `DefaultPreparers` lists every built-in marker of
+  `cgp_config_core::markers`: the document markers (`ConfigFile`, `ConfigDir`,
+  `ProfileFile`, `LocalFile`, `Embedded`) map to `PrepareFileLayer`; `Defaults`,
+  `EnvVars`, `EnvDocument`, `DotEnv`, `CliArgs`, `InMemory`, and `DynSources` map to
+  `IdentityLayer`. A marker without an entry is a compile error. The plan names only
+  `ConfigFile`, `ProfileFile`, and `ConfigDir` as file markers; `LocalFile` and `Embedded`
+  are documents with the same reserved keys, and `EnvDocument` is an env layer, so they
+  were classified accordingly. The markers live in `cgp-config-core` (not the future
+  providers crate) because the preset's table must name them.
+* **`HasActiveProfile` is not a supertrait of `CanPrepareLayer`, and must not become one.**
+  The plan's §6.5 sketch has that bound. The getter needs `alloc` and an
+  `active_profile: String` field; requiring it on the trait would make every context,
+  including `no_std` ones and ones with only env or in-memory layers, carry a profile
+  field, and adding it later would break every existing context. Only the file preparer
+  carries the bound: `PrepareFileLayer` requires `Self: HasActiveProfile`. A context that
+  never lists a file marker never needs the field.
+* **`PrepareFileLayer` implements the 0.1 steps of §6.5** (record and strip `$version`,
+  strip `$include` with a warning, expand `$profiles.default` then `$profiles.{active}`,
+  stamp `Meta::profile`) so that P2 adds file *loaders* without changing what the preset's
+  preparer does. The "active profile defined nowhere" warning needs to know whether a
+  profile file exists, so it belongs to the profile-file loader (P2).
+* **The report is cleared per load.** `CanReportWarning` gained `clear_warnings`
+  (`ReportOnLoader` clears its field, `IgnoreWarnings` does nothing); `LoadLayered` calls
+  it before its first stage, so a second or failed load does not stack warnings. Without
+  the `alloc` feature there is no warning type and the call is compiled out.
+* **The deserializer obeys `HasLoadLimits`.** `SerdeWithProvenance` requires it, and JSON
+  array text (env and CLI sequences) is parsed under `max_depth` / `max_keys` while it is
+  read, never parsed unbounded and checked afterwards.
+* **Merges are bounded and record container provenance.** `MergeOptions::max_depth` stops
+  recursion before it can overflow the stack; merged maps and arrays carry the winning
+  origin (`Meta::shadow`), and the empty map is a true identity (same `Arc`).
+* **`DenyUnknownKeys` aggregates.** `ConfigError::Unknown` now holds every unknown key
+  (`keys: Vec<UnknownKey>`, code unchanged), like validation does.
 
 ## Consequences
 
