@@ -152,11 +152,14 @@ pub struct Span {
 
 impl Span {
     /// A span from its parts.
+    ///
+    /// An `end` before `start` is clamped to `start` (an empty span), the same rule
+    /// [`from_offsets`](Self::from_offsets) applies, so [`len`](Self::len) never underflows.
     #[must_use]
     pub const fn new(start: usize, end: usize, line: u32, column: u32) -> Self {
         Self {
             start,
-            end,
+            end: if end < start { start } else { end },
             line,
             column,
         }
@@ -183,16 +186,16 @@ impl Span {
         }
     }
 
-    /// Length in bytes.
+    /// Length in bytes. Zero for a span whose public fields were set with `end < start`.
     #[must_use]
     pub const fn len(&self) -> usize {
-        self.end - self.start
+        self.end.saturating_sub(self.start)
     }
 
     /// Whether the span covers no bytes.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.end == self.start
+        self.end <= self.start
     }
 }
 
@@ -255,5 +258,23 @@ mod tests {
         let inside = text.find('ü').unwrap() + 1;
         assert_eq!(Span::from_offsets(text, inside, inside).start, inside - 1);
         assert_eq!(Span::new(0, 1, 1, 1).len(), 1);
+    }
+
+    #[test]
+    fn inverted_spans_do_not_panic() {
+        // `new` clamps `end` to `start`, like `from_offsets`.
+        let span = Span::new(10, 3, 1, 1);
+        assert_eq!((span.start, span.end), (10, 10));
+        assert_eq!(span.len(), 0);
+        assert!(span.is_empty());
+        // The fields are public, so `len` also saturates on a hand-built inverted span.
+        let raw = Span {
+            start: 10,
+            end: 3,
+            line: 1,
+            column: 1,
+        };
+        assert_eq!(raw.len(), 0);
+        assert!(raw.is_empty());
     }
 }

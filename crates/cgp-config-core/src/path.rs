@@ -55,10 +55,11 @@ impl From<usize> for PathSegment {
 /// The location of a node inside a configuration tree, such as `http.port` or
 /// `servers[0].host`.
 ///
-/// `Display` writes keys separated by `.` and indices as `[n]`. A key that is empty or
-/// contains `.`, `[`, `]`, `"`, `\`, or whitespace is written in double quotes with `\"`
-/// and `\\` escapes, so [`KeyPath::parse`] reads back every path `Display` writes. The root
-/// path displays as `(root)`.
+/// `Display` writes keys separated by `.` and indices as `[n]`. A key that is empty,
+/// contains `.`, `[`, `]`, `"`, `\`, or whitespace, or is exactly the text `(root)` is
+/// written in double quotes with `\"` and `\\` escapes, so [`KeyPath::parse`] reads back
+/// every path `Display` writes. The root path displays as `(root)` (unquoted); a key named
+/// `(root)` displays as `"(root)"`.
 ///
 /// ```
 /// use cgp_config_core::KeyPath;
@@ -228,8 +229,13 @@ impl FromStr for KeyPath {
     }
 }
 
+/// How the root path displays. A key with exactly this text is quoted, so the two never
+/// print the same.
+const ROOT_TEXT: &str = "(root)";
+
 fn needs_quotes(key: &str) -> bool {
     key.is_empty()
+        || key == ROOT_TEXT
         || key
             .chars()
             .any(|c| matches!(c, '.' | '[' | ']' | '"' | '\\') || c.is_whitespace())
@@ -252,7 +258,7 @@ fn write_key(f: &mut fmt::Formatter<'_>, key: &str) -> fmt::Result {
 impl fmt::Display for KeyPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.segments.is_empty() {
-            return f.write_str("(root)");
+            return f.write_str(ROOT_TEXT);
         }
         for (position, segment) in self.segments.iter().enumerate() {
             match segment {
@@ -295,7 +301,9 @@ fn parse_path(text: &str) -> Result<KeyPath, KeyPathParseError> {
     let err = |offset, reason| KeyPathParseError { offset, reason };
     let bytes = text.as_bytes();
     let mut segments = Vec::new();
-    if text == "(root)" || text.is_empty() {
+    // Only the whole text `(root)` is the root. Display quotes a key with that text, so an
+    // unquoted `(root)` never stands for a key.
+    if text == ROOT_TEXT || text.is_empty() {
         return Ok(KeyPath::root());
     }
     let mut i = 0;
@@ -409,6 +417,23 @@ mod tests {
         let text = path.to_string();
         assert_eq!(text, r#"""."a.b"."q\"uote"."back\\slash"."sp ace""#);
         assert_eq!(KeyPath::parse(&text).unwrap(), path);
+    }
+
+    #[test]
+    fn a_key_named_root_round_trips() {
+        let key = KeyPath::root().join("(root)");
+        assert_eq!(key.to_string(), r#""(root)""#);
+        assert_eq!(KeyPath::parse(&key.to_string()).unwrap(), key);
+        assert_ne!(key.to_string(), KeyPath::root().to_string());
+
+        let nested = KeyPath::root().join("a").join("(root)").join(0usize);
+        assert_eq!(nested.to_string(), r#"a."(root)"[0]"#);
+        assert_eq!(KeyPath::parse(&nested.to_string()).unwrap(), nested);
+
+        // Similar texts are ordinary keys and stay unquoted.
+        let similar = KeyPath::root().join("(root").join("root)");
+        assert_eq!(similar.to_string(), "(root.root)");
+        assert_eq!(KeyPath::parse(&similar.to_string()).unwrap(), similar);
     }
 
     #[test]
