@@ -1,0 +1,197 @@
+//! Providers for the default value tree: the empty document, the merge policies, and the
+//! serde deserializer with an unknown-key policy.
+
+use alloc::vec::Vec;
+
+use cgp_config_core::cgp::core::field::traits::StaticString;
+use cgp_config_core::{
+    CanReportWarning, ConfigDeserializer, ConfigDeserializerComponent, ConfigError,
+    EmptyConfigValue, EmptyConfigValueComponent, HasConfigValueType, HasLoadLimits, LayerMerger,
+    LayerMergerComponent, LoadWarning,
+};
+use cgp_fork::prelude::*;
+use serde::de::DeserializeOwned;
+
+use crate::ConfigValue;
+use crate::de::{UnknownKey, from_value_with_unknown};
+use crate::merge::{ArrayMerge, MergeDepth, MergeOptions, Precedence, merge};
+
+/// The empty map, as the start of the layer fold. The preset provider.
+pub struct EmptyMap;
+
+#[cgp_impl(EmptyMap)]
+impl EmptyConfigValue
+where
+    Self: HasConfigValueType<ConfigValue = ConfigValue>,
+{
+    fn empty_config_value(&self) -> Self::ConfigValue {
+        ConfigValue::empty_map()
+    }
+}
+
+/// Merges with `options` (provenance capped by the context's limits), then checks the
+/// merged tree against `max_depth` and `max_keys`.
+fn merge_checked<Context>(
+    context: &Context,
+    base: ConfigValue,
+    overlay: ConfigValue,
+    options: MergeOptions,
+) -> Result<ConfigValue, Context::Error>
+where
+    Context: CanRaiseError<ConfigError> + HasLoadLimits,
+{
+    let limits = context.load_limits();
+    let options = options.with_max_provenance(limits.max_provenance);
+    let merged = merge(base, overlay, &options).map_err(Context::raise_error)?;
+    merged.check_limits(&limits).map_err(Context::raise_error)?;
+    Ok(merged)
+}
+
+macro_rules! merge_provider {
+    ($(#[$doc:meta])* $name:ident => $options:expr) => {
+        $(#[$doc])*
+        pub struct $name;
+
+        #[cgp_impl($name)]
+        impl LayerMerger
+        where
+            Self: HasConfigValueType<ConfigValue = ConfigValue> + CanRaiseError<ConfigError> + HasLoadLimits,
+        {
+            fn merge_layers(
+                &self,
+                base: Self::ConfigValue,
+                overlay: Self::ConfigValue,
+            ) -> Result<Self::ConfigValue, Self::Error> {
+                merge_checked(self, base, overlay, $options)
+            }
+        }
+    };
+}
+
+merge_provider! {
+    /// Maps merge recursively; scalars and arrays from the later layer replace. The preset
+    /// provider. Shape changes are `ConfigError::MergeConflict`.
+    DeepMerge => MergeOptions::DEEP
+}
+
+merge_provider! {
+    /// Root keys merge; the value under each root key is replaced whole by the later
+    /// layer.
+    ShallowReplace => MergeOptions::DEEP.with_depth(MergeDepth::Shallow)
+}
+
+merge_provider! {
+    /// Like [`DeepMerge`], but two arrays at the same path concatenate (base, then
+    /// overlay). Figment calls this *admerge*.
+    AppendArrays => MergeOptions::DEEP.with_arrays(ArrayMerge::Append)
+}
+
+merge_provider! {
+    /// Maps merge recursively; where both layers have a value, the **earlier** one wins
+    /// (figment's *join*). Useful for "fill in what is missing" layers.
+    JoinBaseWins => MergeOptions::DEEP.with_precedence(Precedence::BaseWins)
+}
+
+merge_provider! {
+    /// [`JoinBaseWins`] with array concatenation (figment's *adjoin*).
+    AdjoinArrays => MergeOptions::DEEP
+        .with_precedence(Precedence::BaseWins)
+        .with_arrays(ArrayMerge::Append)
+}
+
+/// Figment's name for [`AppendArrays`].
+pub type Admerge = AppendArrays;
+
+/// Like [`DeepMerge`], but arrays of maps are matched on the key named by `Key`
+/// (`MergeArraysByKey<Symbol!("name")>`): matching elements merge recursively, others are
+/// appended. Order: base order, then elements only in the overlay. A key repeated inside
+/// one array is `ConfigError::DuplicateKey`.
+pub struct MergeArraysByKey<Key>(PhantomData<Key>);
+
+#[cgp_impl(MergeArraysByKey<Key>)]
+impl<Key> LayerMerger
+where
+    Self:
+        HasConfigValueType<ConfigValue = ConfigValue> + CanRaiseError<ConfigError> + HasLoadLimits,
+    Key: StaticString,
+{
+    fn merge_layers(
+        &self,
+        base: Self::ConfigValue,
+        overlay: Self::ConfigValue,
+    ) -> Result<Self::ConfigValue, Self::Error> {
+        merge_checked(
+            self,
+            base,
+            overlay,
+            MergeOptions::DEEP.with_arrays(ArrayMerge::ByKey(Key::VALUE)),
+        )
+    }
+}
+
+/// What to do with keys the config struct does not declare.
+pub trait UnknownKeyPolicy<Context> {
+    /// Handles the unknown keys found by one deserialization.
+    ///
+    /// # Errors
+    ///
+    /// When the policy rejects unknown keys.
+    fn handle(context: &Context, unknown: Vec<UnknownKey>) -> Result<(), ConfigError>;
+}
+
+/// Records each unknown key as `LoadWarning::UnknownKey` (with a "did you mean"
+/// suggestion). The preset policy.
+pub struct WarnUnknownKeys;
+
+impl<Context: CanReportWarning> UnknownKeyPolicy<Context> for WarnUnknownKeys {
+    fn handle(context: &Context, unknown: Vec<UnknownKey>) -> Result<(), ConfigError> {
+        for key in unknown {
+            context.report_warning(LoadWarning::UnknownKey {
+                path: key.path,
+                suggestion: key.suggestion,
+                meta: Some(key.meta),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Fails the load with `ConfigError::Unknown` for the first unknown key.
+pub struct DenyUnknownKeys;
+
+impl<Context> UnknownKeyPolicy<Context> for DenyUnknownKeys {
+    fn handle(_context: &Context, unknown: Vec<UnknownKey>) -> Result<(), ConfigError> {
+        match unknown.into_iter().next() {
+            Some(key) => Err(ConfigError::unknown(key.path, key.suggestion, key.meta)),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Ignores unknown keys silently, like plain serde.
+pub struct IgnoreUnknownKeys;
+
+impl<Context> UnknownKeyPolicy<Context> for IgnoreUnknownKeys {
+    fn handle(_context: &Context, _unknown: Vec<UnknownKey>) -> Result<(), ConfigError> {
+        Ok(())
+    }
+}
+
+/// Deserializes with the provenance-keeping, type-directed deserializer of this crate
+/// (see [`crate::de`]) and applies the unknown-key `Policy`. The preset provider is
+/// `SerdeWithProvenance<WarnUnknownKeys>`.
+pub struct SerdeWithProvenance<Policy>(PhantomData<Policy>);
+
+#[cgp_impl(SerdeWithProvenance<Policy>)]
+impl<Policy, Config> ConfigDeserializer<Config>
+where
+    Self: HasConfigValueType<ConfigValue = ConfigValue> + CanRaiseError<ConfigError>,
+    Config: DeserializeOwned,
+    Policy: UnknownKeyPolicy<Self>,
+{
+    fn deserialize_config(&self, value: Self::ConfigValue) -> Result<Config, Self::Error> {
+        let (config, unknown) = from_value_with_unknown(&value).map_err(Self::raise_error)?;
+        Policy::handle(self, unknown).map_err(Self::raise_error)?;
+        Ok(config)
+    }
+}
