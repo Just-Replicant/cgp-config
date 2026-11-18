@@ -15,8 +15,8 @@ struct Config {
     tags: Vec<String>,
 }
 
-struct Defaults;
-struct Overrides;
+// `Defaults` and `EnvVars` are built-in markers (from the prelude), so the preset's
+// `DefaultPreparers` table already has a preparer for them.
 struct Memory;
 
 #[cgp_impl(Memory)]
@@ -36,11 +36,11 @@ where
 }
 
 #[cgp_impl(Memory)]
-impl SourceLoader<Overrides>
+impl SourceLoader<EnvVars>
 where
     Self: HasConfigValueType<ConfigValue = Value> + HasErrorType,
 {
-    fn load_source(&self, _: PhantomData<Overrides>) -> Result<Option<Value>, Self::Error> {
+    fn load_source(&self, _: PhantomData<EnvVars>) -> Result<Option<Value>, Self::Error> {
         let mut layer = Value::map([("tags", Value::from(r#"["b", "c", "d"]"#))]);
         layer.stamp_origin(&Origin::env("SVC__TAGS"));
         Ok(Some(layer))
@@ -78,13 +78,13 @@ delegate_components! {
         ErrorTypeProviderComponent: cgp_fork::anyhow::UseAnyhowError,
         ErrorRaiserComponent: cgp_fork::anyhow::RaiseAnyhowError,
         SourceLoaderComponent: Memory,
-        ConfigLoaderComponent: LoadLayered<Product![Defaults, Overrides]>,
+        ConfigLoaderComponent: LoadLayered<Product![Defaults, EnvVars]>,
         ConfigValidatorComponent: NonEmptyName,
     }
 }
 
 config_check! {
-    App { config: Config, sources: [Defaults, Overrides] }
+    App { config: Config, sources: [Defaults, EnvVars] }
 }
 
 #[test]
@@ -102,6 +102,8 @@ fn layered_load_with_validation_and_warnings() {
         "config::validation"
     );
 
+    // A second load (failing again) replaces the report instead of stacking on it.
+    assert!(CanLoadConfig::<Config>::load_config(&app).is_err());
     let warnings = app.load_report().take();
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].code(), "config::warn::unknown_key");
@@ -119,5 +121,10 @@ fn facade_reexports_cover_the_public_surface() {
     assert!(cgp_config::reserved::is_reserved("$version"));
     assert_eq!(cgp_config::LoadLimits::DEFAULT.max_depth, 64);
     assert_eq!(cgp_config::CoreConfigPreset::VERSION, 1);
+    let _ = (
+        cgp_config::markers::ConfigFile,
+        cgp_config::PrepareFileLayer,
+    );
+    let _: Option<cgp_config::map::IntoIter> = None;
     let _: Option<cgp_config::KeyPath> = cgp_config::KeyPath::parse("a.b[0]").ok();
 }

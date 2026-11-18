@@ -20,18 +20,22 @@
 extern crate alloc;
 
 pub mod de;
-mod map;
+pub mod map;
 pub mod merge;
 mod number;
+mod prepare;
 pub mod preset;
 mod providers;
 mod serde_impls;
 mod value;
 
-pub use de::{DeserializeError, UnknownKey, from_value, from_value_with_unknown};
+pub use de::{
+    DeserializeError, UnknownKey, from_value, from_value_with_limits, from_value_with_unknown,
+};
 pub use map::ConfigMap;
 pub use number::Number;
-pub use preset::CoreConfigPreset;
+pub use prepare::PrepareFileLayer;
+pub use preset::{CoreConfigPreset, DefaultPreparers};
 pub use providers::{
     AdjoinArrays, Admerge, AppendArrays, DeepMerge, DenyUnknownKeys, EmptyMap, IgnoreUnknownKeys,
     JoinBaseWins, MergeArraysByKey, SerdeWithProvenance, ShallowReplace, UnknownKeyPolicy,

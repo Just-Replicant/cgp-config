@@ -24,8 +24,7 @@
 //!     port: u16,
 //! }
 //!
-//! /// A source marker, and a provider that serves it from memory.
-//! struct Defaults;
+//! /// A provider that serves the built-in `Defaults` marker from memory.
 //! struct BuiltIn;
 //!
 //! #[cgp_impl(BuiltIn)]
@@ -89,19 +88,21 @@ pub use cgp_config_core::*;
 #[cfg(feature = "alloc")]
 pub use cgp_config_value::{
     AdjoinArrays, Admerge, AppendArrays, ConfigMap, ConfigValue, CoreConfigPreset, DeepMerge,
-    DenyUnknownKeys, DeserializeError, EmptyMap, IgnoreUnknownKeys, JoinBaseWins, Kind,
-    MergeArraysByKey, Number, REDACTED, SerdeWithProvenance, ShallowReplace, UnknownKey,
-    UnknownKeyPolicy, WarnUnknownKeys, de, from_value, from_value_with_unknown, merge, preset,
+    DefaultPreparers, DenyUnknownKeys, DeserializeError, EmptyMap, IgnoreUnknownKeys, JoinBaseWins,
+    Kind, MergeArraysByKey, Number, PrepareFileLayer, REDACTED, SerdeWithProvenance,
+    ShallowReplace, UnknownKeyPolicy, WarnUnknownKeys, de, from_value, from_value_with_limits,
+    from_value_with_unknown, map, merge, preset,
 };
 
 /// The default value tree, under its short name.
 #[cfg(feature = "alloc")]
 pub type Value = ConfigValue;
 
-/// One import for applications: the CGP prelude, every component and provider of this
-/// crate, the value tree, and the error and report types.
+/// One import for applications: the CGP prelude, every component, provider, and built-in
+/// source marker of this crate, the value tree, and the error and report types.
 pub mod prelude {
     pub use cgp_config_core::components::*;
+    pub use cgp_config_core::markers::*;
     pub use cgp_config_core::providers::*;
     #[cfg(feature = "alloc")]
     pub use cgp_config_core::{
@@ -112,8 +113,8 @@ pub mod prelude {
     #[cfg(feature = "alloc")]
     pub use cgp_config_value::{
         AdjoinArrays, Admerge, AppendArrays, ConfigMap, ConfigValue, CoreConfigPreset, DeepMerge,
-        DenyUnknownKeys, EmptyMap, IgnoreUnknownKeys, JoinBaseWins, MergeArraysByKey,
-        SerdeWithProvenance, ShallowReplace, WarnUnknownKeys,
+        DefaultPreparers, DenyUnknownKeys, EmptyMap, IgnoreUnknownKeys, JoinBaseWins,
+        MergeArraysByKey, PrepareFileLayer, SerdeWithProvenance, ShallowReplace, WarnUnknownKeys,
     };
     pub use cgp_fork::prelude::*;
 
