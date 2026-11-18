@@ -331,3 +331,37 @@ fn type_errors_without_a_known_origin_still_show_overrides() {
     );
     assert!(!shown.contains("kv/app"));
 }
+
+#[test]
+fn unknown_errors_aggregate_every_key() {
+    use cgp_config_core::UnknownKey;
+    let file = Meta::new(Origin::file("app.toml"));
+    let error = ConfigError::unknown_keys([
+        UnknownKey::new("http.prot", Some("port".into()), file.clone()),
+        UnknownKey::new("nmae", None, Meta::default()),
+    ])
+    .unwrap();
+    assert_eq!(error.code(), "config::unknown");
+    assert_eq!(
+        error.to_string(),
+        "unknown keys (2): http.prot at app.toml (did you mean \"port\"?); nmae"
+    );
+    // `path` and `meta` describe the first key.
+    assert_eq!(
+        error.path().map(ToString::to_string).as_deref(),
+        Some("http.prot")
+    );
+    assert_eq!(error.meta(), Some(&file));
+    // A prefix applies to every key.
+    let prefixed = error.with_path_prefix(&KeyPath::parse("app").unwrap());
+    let ConfigError::Unknown { keys } = &prefixed else {
+        panic!("unexpected {prefixed:?}");
+    };
+    let paths: Vec<String> = keys.iter().map(|k| k.path.to_string()).collect();
+    assert_eq!(paths, ["app.http.prot", "app.nmae"]);
+    // One key keeps the single-key message.
+    assert_eq!(
+        ConfigError::unknown("x", None, Meta::default()).to_string(),
+        "unknown key x"
+    );
+}

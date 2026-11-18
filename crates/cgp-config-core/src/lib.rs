@@ -41,6 +41,7 @@ extern crate std;
 pub mod components;
 mod limits;
 mod macros;
+pub mod markers;
 pub mod providers;
 mod static_path;
 
@@ -59,7 +60,7 @@ mod suggest;
 
 pub use components::*;
 #[cfg(feature = "alloc")]
-pub use error::{ConfigError, RedactedRef, ValidationErrors, ValidationIssue, codes};
+pub use error::{ConfigError, RedactedRef, UnknownKey, ValidationErrors, ValidationIssue, codes};
 pub use limits::LoadLimits;
 #[cfg(feature = "alloc")]
 pub use meta::{Meta, Provenance};

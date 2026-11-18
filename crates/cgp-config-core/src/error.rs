@@ -103,14 +103,14 @@ pub enum ConfigError {
         /// What was expected there (a type name or a description), possibly empty.
         expected: String,
     },
-    /// A key the config struct does not declare (with `DenyUnknownKeys`).
+    /// Keys the config struct does not declare (with `DenyUnknownKeys`, or one key from a
+    /// `#[serde(deny_unknown_fields)]` struct).
+    ///
+    /// `DenyUnknownKeys` reports every unknown key of the load at once, in document order,
+    /// so an operator fixes all typos in one run. Never empty.
     Unknown {
-        /// The unknown key.
-        path: KeyPath,
-        /// The closest declared name, when it looks like a typo.
-        suggestion: Option<String>,
-        /// Provenance of the unknown key.
-        meta: Box<Meta>,
+        /// The unknown keys, at least one.
+        keys: Vec<UnknownKey>,
     },
     /// A key appears twice in one document or one layer.
     DuplicateKey {
@@ -252,9 +252,34 @@ impl ConfigError {
     #[must_use]
     pub fn unknown(path: impl Into<KeyPath>, suggestion: Option<String>, meta: Meta) -> Self {
         Self::Unknown {
-            path: path.into(),
-            suggestion,
-            meta: Box::new(meta),
+            keys: alloc::vec![UnknownKey::new(path, suggestion, meta)],
+        }
+    }
+
+    /// Every key of `keys` as one error, or `None` when there are none.
+    ///
+    /// ```
+    /// use cgp_config_core::{ConfigError, Meta, UnknownKey};
+    ///
+    /// let error = ConfigError::unknown_keys([
+    ///     UnknownKey::new("http.prot", Some("port".into()), Meta::default()),
+    ///     UnknownKey::new("nmae", Some("name".into()), Meta::default()),
+    /// ])
+    /// .unwrap();
+    /// assert_eq!(error.code(), "config::unknown");
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     r#"unknown keys (2): http.prot (did you mean "port"?); nmae (did you mean "name"?)"#
+    /// );
+    /// assert!(ConfigError::unknown_keys([]).is_none());
+    /// ```
+    #[must_use]
+    pub fn unknown_keys(keys: impl IntoIterator<Item = UnknownKey>) -> Option<Self> {
+        let keys: Vec<UnknownKey> = keys.into_iter().collect();
+        if keys.is_empty() {
+            None
+        } else {
+            Some(Self::Unknown { keys })
         }
     }
 
@@ -313,27 +338,30 @@ impl ConfigError {
         }
     }
 
-    /// The key path the error is about, for variants that have one.
+    /// The key path the error is about, for variants that have one (the first key of an
+    /// [`Unknown`](Self::Unknown) error).
     #[must_use]
     pub fn path(&self) -> Option<&KeyPath> {
         match self {
             Self::Type { path, .. }
             | Self::Missing { path, .. }
-            | Self::Unknown { path, .. }
             | Self::DuplicateKey { path, .. }
             | Self::MergeConflict { path, .. }
             | Self::Interpolate { path, .. }
             | Self::InterpolateCycle { path } => Some(path),
+            Self::Unknown { keys } => keys.first().map(|key| &key.path),
             _ => None,
         }
     }
 
-    /// The node metadata, for variants that carry it.
+    /// The node metadata, for variants that carry it (the first key of an
+    /// [`Unknown`](Self::Unknown) error).
     #[must_use]
     pub fn meta(&self) -> Option<&Meta> {
         match self {
             Self::Type { meta, .. } => meta.as_deref(),
-            Self::Unknown { meta, .. } | Self::DuplicateKey { meta, .. } => Some(&**meta),
+            Self::Unknown { keys } => keys.first().map(|key| &key.meta),
+            Self::DuplicateKey { meta, .. } => Some(&**meta),
             _ => None,
         }
     }
@@ -345,11 +373,15 @@ impl ConfigError {
         match &mut self {
             Self::Type { path, .. }
             | Self::Missing { path, .. }
-            | Self::Unknown { path, .. }
             | Self::DuplicateKey { path, .. }
             | Self::MergeConflict { path, .. }
             | Self::Interpolate { path, .. }
             | Self::InterpolateCycle { path } => *path = prefix.concat(path),
+            Self::Unknown { keys } => {
+                for key in keys {
+                    key.path = prefix.concat(&key.path);
+                }
+            }
             Self::Validation(errors) => {
                 for item in &mut errors.items {
                     item.path = prefix.concat(&item.path);
@@ -412,20 +444,26 @@ impl fmt::Display for ConfigError {
                 }
                 Ok(())
             }
-            Self::Unknown {
-                path,
-                suggestion,
-                meta,
-            } => {
-                write!(f, "unknown key {path}")?;
-                if !meta.origin.is_unknown() {
-                    write!(f, " at {}", meta.location())?;
+            Self::Unknown { keys } => match keys.as_slice() {
+                [key] => {
+                    write!(f, "unknown key {}", key.path)?;
+                    if !key.meta.origin.is_unknown() {
+                        write!(f, " at {}", key.meta.location())?;
+                    }
+                    if let Some(suggestion) = &key.suggestion {
+                        write!(f, "; did you mean \"{suggestion}\"?")?;
+                    }
+                    Ok(())
                 }
-                if let Some(suggestion) = suggestion {
-                    write!(f, "; did you mean \"{suggestion}\"?")?;
+                keys => {
+                    write!(f, "unknown keys ({})", keys.len())?;
+                    for (index, key) in keys.iter().enumerate() {
+                        f.write_str(if index == 0 { ": " } else { "; " })?;
+                        write!(f, "{key}")?;
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
+            },
             Self::DuplicateKey { path, meta } => {
                 write!(f, "duplicate key {path}")?;
                 if !meta.origin.is_unknown() {
@@ -490,6 +528,46 @@ impl core::error::Error for ConfigError {}
 impl From<ValidationErrors> for ConfigError {
     fn from(errors: ValidationErrors) -> Self {
         Self::Validation(errors)
+    }
+}
+
+/// One key the config struct does not declare.
+///
+/// `Display` writes `path at origin (did you mean "name"?)`, omitting the parts that are
+/// unknown.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct UnknownKey {
+    /// The key's path.
+    pub path: KeyPath,
+    /// The closest declared field name, when the key looks like a typo of it.
+    pub suggestion: Option<String>,
+    /// The key's provenance.
+    pub meta: Meta,
+}
+
+impl UnknownKey {
+    /// An unknown key.
+    #[must_use]
+    pub fn new(path: impl Into<KeyPath>, suggestion: Option<String>, meta: Meta) -> Self {
+        Self {
+            path: path.into(),
+            suggestion,
+            meta,
+        }
+    }
+}
+
+impl fmt::Display for UnknownKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.path)?;
+        if !self.meta.origin.is_unknown() {
+            write!(f, " at {}", self.meta.location())?;
+        }
+        if let Some(suggestion) = &self.suggestion {
+            write!(f, " (did you mean \"{suggestion}\"?)")?;
+        }
+        Ok(())
     }
 }
 
