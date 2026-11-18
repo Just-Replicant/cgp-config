@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // prelude does the same for applications).
 use cgp_config_core::components::*;
 use cgp_config_core::{
-    CollectInOrder, ConfigError, IgnoreWarnings, LoadLayered, LoadLimits, LoadLimitsField,
-    LoadReport, LoadWarning, Meta, NoValidation, Origin, config_check,
+    CollectInOrder, ConfigError, IdentityLayer, IgnoreWarnings, LoadLayered, LoadLimits,
+    LoadLimitsField, LoadReport, LoadWarning, Meta, NoValidation, Origin, config_check,
 };
 use cgp_config_value::{
     ConfigValue, CoreConfigPreset, DenyUnknownKeys, SerdeWithProvenance, ShallowReplace,
@@ -99,6 +99,11 @@ delegate_components! {
         ErrorRaiserComponent: RaiseFrom,
         SourceLoaderComponent: FieldSource,
         ConfigLoaderComponent: LoadLayered<Product![Base, Env]>,
+        // Custom markers are not in the preset's `DefaultPreparers`, so the context lists
+        // their preparers (leaving them out is a compile error).
+        LayerPreparerComponent: UseDelegate<new LoaderPreparers {
+            [Base, Env]: IdentityLayer,
+        }>,
         ConfigValidatorComponent: UseDelegate<new LoaderValidators {
             AppConfig: ValidateApp,
             Http: NoValidation,
@@ -273,6 +278,7 @@ delegate_components! {
         SourceLoaderComponent: FieldSource,
         ConfigLoaderComponent: LoadLayered<Product![Base, Env]>,
         ConfigDeserializerComponent: SerdeWithProvenance<DenyUnknownKeys>,
+        LayerPreparerComponent: UseDelegate<LoaderPreparers>,
         LayerMergerComponent: ShallowReplace,
         LoadLimitsComponent: LoadLimitsField,
         LoadReportComponent: IgnoreWarnings,
@@ -342,4 +348,107 @@ fn collect_in_order_is_usable_on_its_own() {
         .unwrap();
     assert!(ConfigValue::ptr_eq(&acc, &out));
     let _ = CollectInOrder;
+}
+
+#[test]
+fn the_collected_root_names_its_layers() {
+    use cgp_config_core::CanCollectLayers;
+    // Only the file: the root is the file's root (same allocation), not "unknown".
+    let only_file = loader(None);
+    let file = only_file.base.clone().unwrap();
+    let tree = only_file
+        .collect_layers(
+            only_file.empty_config_value(),
+            PhantomData::<Product![Base, Env]>,
+        )
+        .unwrap();
+    assert!(ConfigValue::ptr_eq(&tree, &file));
+    assert_eq!(tree.meta().origin, Origin::file("config/app.toml"));
+
+    // File then env: the root names env and records the file.
+    let both = loader(Some(env_layer("9090")));
+    let tree = both
+        .collect_layers(
+            both.empty_config_value(),
+            PhantomData::<Product![Base, Env]>,
+        )
+        .unwrap();
+    assert_eq!(tree.meta().origin, Origin::env("APP__HTTP__PORT"));
+    assert_eq!(
+        tree.meta().shadowed.first().map(|p| p.origin.clone()),
+        Some(Origin::file("config/app.toml"))
+    );
+}
+
+#[test]
+fn every_load_starts_with_an_empty_report() {
+    let loader = loader(None);
+    let _: AppConfig = loader.load_config().unwrap();
+    let _: AppConfig = loader.load_config().unwrap();
+    assert_eq!(loader.load_report().len(), 1, "warnings must not stack");
+
+    // A failed load also starts from an empty report: the type error stops the load
+    // before unknown keys are reported, so the earlier warning must be gone.
+    let failing = Loader {
+        env: Some(env_layer("not a port")),
+        ..loader
+    };
+    assert_eq!(failing.load_report().len(), 1);
+    assert!(CanLoadConfig::<AppConfig>::load_config(&failing).is_err());
+    assert!(failing.load_report().is_empty());
+    failing.load_report().push(LoadWarning::MissingProfile {
+        profile: "stale".into(),
+    });
+    assert!(CanLoadConfig::<AppConfig>::load_config(&failing).is_err());
+    assert!(failing.load_report().is_empty());
+}
+
+#[test]
+fn deny_unknown_keys_reports_every_unknown_key() {
+    let mut base = file_layer();
+    base.as_map_mut().unwrap().insert(
+        "nmae",
+        ConfigValue::from("typo").with_origin(Origin::file("config/app.toml")),
+    );
+    let strict = StrictLoader {
+        base: Some(base),
+        env: None,
+        load_limits: LoadLimits::DEFAULT,
+    };
+    let error = CanLoadConfig::<AppConfig>::load_config(&strict).unwrap_err();
+    let config_error = error.downcast_ref::<ConfigError>().unwrap();
+    assert_eq!(config_error.code(), "config::unknown");
+    let ConfigError::Unknown { keys } = config_error else {
+        panic!("unexpected error {config_error:?}");
+    };
+    let paths: Vec<String> = keys.iter().map(|k| k.path.to_string()).collect();
+    assert_eq!(paths, ["http.prot", "nmae"]);
+    assert_eq!(
+        error.to_string(),
+        "unknown keys (2): http.prot at config/app.toml (did you mean \"port\"?); \
+         nmae at config/app.toml (did you mean \"name\"?)"
+    );
+}
+
+#[test]
+fn json_array_text_obeys_the_context_limits() {
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Tags {
+        tags: Vec<String>,
+    }
+    let strict = StrictLoader {
+        base: None,
+        env: None,
+        load_limits: LoadLimits::DEFAULT.with_max_keys(3),
+    };
+    let tree = ConfigValue::map([("tags", ConfigValue::from(r#"["a","b","c"]"#))]);
+    let error = CanDeserializeConfig::<Tags>::deserialize_config(&strict, tree).unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<ConfigError>(),
+        Some(&ConfigError::limit_exceeded("max_keys", 3))
+    );
+    let tree = ConfigValue::map([("tags", ConfigValue::from(r#"["a","b"]"#))]);
+    let tags: Tags = CanDeserializeConfig::<Tags>::deserialize_config(&strict, tree).unwrap();
+    assert_eq!(tags.tags, ["a", "b"]);
 }

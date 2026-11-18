@@ -262,3 +262,226 @@ fn value_debug_and_conversions() {
     assert_eq!(ConfigValue::from(Some(2_u8)).as_u64(), Some(2));
     assert!(!ConfigValue::from(1).eq_with_meta(&ConfigValue::from("1")));
 }
+
+// --- JSON sequence text under the load limits --------------------------------------------
+
+mod json_limits {
+    use cgp_config_core::{ConfigError, LoadLimits};
+    use cgp_config_value::{ConfigValue, from_value, from_value_with_limits};
+
+    #[derive(serde::Deserialize, Debug)]
+    struct Ids {
+        ids: Vec<u32>,
+    }
+
+    #[derive(serde::Deserialize, Debug)]
+    #[allow(dead_code)]
+    struct Two {
+        a: Vec<u32>,
+        b: Vec<u32>,
+    }
+
+    fn ids(text: &str) -> ConfigValue {
+        ConfigValue::map([("ids", ConfigValue::from(text))])
+    }
+
+    fn json_array(len: usize) -> String {
+        let items: Vec<String> = (0..len).map(|i| i.to_string()).collect();
+        format!("[{}]", items.join(","))
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "builds 100k+ nodes; far too slow under Miri")]
+    fn a_wide_array_fails_with_max_keys_instead_of_allocating() {
+        // The tree has one entry (`ids`), so four elements push it to five entries.
+        let limits = LoadLimits::DEFAULT.with_max_keys(4);
+        let error = from_value_with_limits::<Ids>(&ids("[1,2,3,4]"), &limits).unwrap_err();
+        assert_eq!(error, ConfigError::limit_exceeded("max_keys", 4));
+        // Exactly at the limit is fine.
+        let (ok, _) = from_value_with_limits::<Ids>(&ids("[1,2,3]"), &limits).unwrap();
+        assert_eq!(ok.ids, [1, 2, 3]);
+        // The defaults apply to `from_value` (150k elements > 100k default keys).
+        let error = from_value::<Ids>(&ids(&json_array(150_000))).unwrap_err();
+        assert_eq!(error.code(), "config::limit_exceeded");
+    }
+
+    #[test]
+    fn nesting_fails_with_max_depth_counted_from_the_string() {
+        #[derive(serde::Deserialize, Debug)]
+        #[allow(dead_code)]
+        struct Nested {
+            ids: Vec<Vec<Vec<u32>>>,
+        }
+        // `ids` sits at depth 1, so `[[[1]]]` puts the integer at depth 4.
+        let limits = LoadLimits::DEFAULT.with_max_depth(3);
+        let error = from_value_with_limits::<Nested>(&ids("[[[1]]]"), &limits).unwrap_err();
+        assert_eq!(error, ConfigError::limit_exceeded("max_depth", 3));
+        let limits = LoadLimits::DEFAULT.with_max_depth(4);
+        assert!(from_value_with_limits::<Nested>(&ids("[[[1]]]"), &limits).is_ok());
+    }
+
+    #[test]
+    fn max_depth_is_enforced_below_serde_jsons_own_recursion_limit() {
+        // 100 levels is within serde_json's 128 but beyond the default `max_depth` of 64:
+        // the error is the load limit, not a JSON syntax error.
+        let text = format!("{}{}", "[".repeat(100), "]".repeat(100));
+        let error = from_value::<serde_json::Value>(&ConfigValue::from(text.as_str()));
+        // `serde_json::Value` asks for "any", which does not parse strings: use a sequence.
+        assert!(error.is_ok());
+        let error =
+            from_value::<Vec<serde_json::Value>>(&ConfigValue::from(text.as_str())).unwrap_err();
+        assert_eq!(error, ConfigError::limit_exceeded("max_depth", 64));
+    }
+
+    #[test]
+    fn several_json_strings_share_one_key_budget() {
+        let tree = ConfigValue::map([
+            ("a", ConfigValue::from("[1,2]")),
+            ("b", ConfigValue::from("[3,4]")),
+        ]);
+        // Two existing entries plus four elements.
+        let limits = LoadLimits::DEFAULT.with_max_keys(5);
+        let error = from_value_with_limits::<Two>(&tree, &limits).unwrap_err();
+        assert_eq!(error.code(), "config::limit_exceeded");
+        let limits = LoadLimits::DEFAULT.with_max_keys(6);
+        assert!(from_value_with_limits::<Two>(&tree, &limits).is_ok());
+    }
+
+    #[test]
+    fn empty_arrays_and_syntax_errors_are_unaffected() {
+        let limits = LoadLimits::DEFAULT.with_max_keys(1).with_max_depth(1);
+        let (empty, _) = from_value_with_limits::<Ids>(&ids("[]"), &limits).unwrap();
+        assert!(empty.ids.is_empty());
+        let error = from_value::<Ids>(&ids("[1,")).unwrap_err();
+        assert_eq!(error.code(), "config::type");
+        assert!(
+            error.to_string().contains("invalid JSON array text"),
+            "{error}"
+        );
+        let error = from_value::<Ids>(&ids("[1] x")).unwrap_err();
+        assert_eq!(error.code(), "config::type");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "builds 100k+ nodes; far too slow under Miri")]
+    fn the_standalone_deserializer_applies_the_defaults() {
+        use serde::Deserialize;
+        let text = ConfigValue::from(json_array(150_000).as_str());
+        let error = Vec::<u32>::deserialize(&text).unwrap_err();
+        assert_eq!(error.into_config_error().code(), "config::limit_exceeded");
+        let duplicate = ConfigValue::from(r#"[{"a":1,"a":2}]"#);
+        assert!(Vec::<serde_json::Value>::deserialize(&duplicate).is_err());
+    }
+}
+
+// --- Floats stay finite; keys follow value rules -----------------------------------------
+
+#[test]
+fn float_coercion_rejects_overflow_to_infinity() {
+    // A finite f64 that does not fit an f32.
+    let error = from_value::<f32>(&ConfigValue::from(1e300)).unwrap_err();
+    assert_eq!(error.code(), "config::type");
+    assert!(error.to_string().contains("out of range"), "{error}");
+    // Overflowing text.
+    assert_eq!(code::<f32>(&ConfigValue::from("1e39")), "config::type");
+    assert_eq!(code::<f64>(&ConfigValue::from("1e400")), "config::type");
+    // The widest integers fit (u64::MAX is about 1.8e19, far below f32::MAX).
+    let wide: f32 = from_value(&ConfigValue::from(u64::MAX)).unwrap();
+    assert!(wide.is_finite());
+    let wide: f64 = from_value(&ConfigValue::from(i64::MIN)).unwrap();
+    assert!(wide.is_finite());
+    // Explicit non-finite values pass through.
+    assert!(
+        from_value::<f32>(&ConfigValue::from("-inf"))
+            .unwrap()
+            .is_infinite()
+    );
+    assert!(
+        from_value::<f64>(&ConfigValue::from("NaN"))
+            .unwrap()
+            .is_nan()
+    );
+    assert!(
+        from_value::<f32>(&ConfigValue::from(f64::INFINITY))
+            .unwrap()
+            .is_infinite()
+    );
+}
+
+#[test]
+fn map_keys_parse_bools_and_floats_like_values() {
+    use std::collections::HashMap;
+    let tree = ConfigValue::map([("TRUE", 1.into()), ("False", 2.into())]);
+    let by_bool: HashMap<bool, u8> = from_value(&tree).unwrap();
+    assert_eq!(by_bool.get(&true), Some(&1));
+    assert_eq!(by_bool.get(&false), Some(&2));
+    assert_eq!(
+        code::<HashMap<bool, u8>>(&ConfigValue::map([("yes", 1.into())])),
+        "config::type"
+    );
+
+    /// An `f32` map key (ordered by bits, since `f32` is not `Ord`).
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+    struct F32Key(u32);
+    impl<'de> Deserialize<'de> for F32Key {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            f32::deserialize(deserializer).map(|value| Self(value.to_bits()))
+        }
+    }
+    let floats: BTreeMap<F32Key, u8> =
+        from_value(&ConfigValue::map([("1.5", 1.into()), ("-inf", 2.into())])).unwrap();
+    assert!(floats.contains_key(&F32Key(1.5_f32.to_bits())));
+    assert!(floats.contains_key(&F32Key(f32::NEG_INFINITY.to_bits())));
+    // Overflowing key text is rejected like overflowing value text.
+    assert_eq!(
+        code::<BTreeMap<F32Key, u8>>(&ConfigValue::map([("1e39", 1.into())])),
+        "config::type"
+    );
+    let error = from_value::<HashMap<u32, u8>>(&ConfigValue::map([("x", 1.into())])).unwrap_err();
+    assert_eq!(error.code(), "config::type");
+}
+
+// --- `deserialize_any` does not coerce strings (a deliberate choice) --------------------
+
+#[test]
+fn deserialize_any_sees_env_strings_as_strings() {
+    #[derive(Deserialize, Debug, PartialEq)]
+    #[serde(untagged)]
+    enum Port {
+        Number(u16),
+        Named(String),
+    }
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Inner {
+        port: u16,
+    }
+    #[derive(Deserialize, Debug)]
+    struct Flattened {
+        #[serde(flatten)]
+        rest: std::collections::HashMap<String, serde_json::Value>,
+    }
+
+    let env = ConfigValue::from("8080");
+    // Untagged enums ask for "any": the env string stays a string.
+    assert_eq!(
+        from_value::<Port>(&env).unwrap(),
+        Port::Named("8080".into())
+    );
+    // A typed file value still picks the number variant.
+    assert_eq!(
+        from_value::<Port>(&ConfigValue::from(8080)).unwrap(),
+        Port::Number(8080)
+    );
+    // `serde_json::Value` and flattened maps see the raw string too.
+    assert_eq!(
+        from_value::<serde_json::Value>(&env).unwrap(),
+        serde_json::json!("8080")
+    );
+    let flat: Flattened = from_value(&ConfigValue::map([("port", env.clone())])).unwrap();
+    assert_eq!(flat.rest["port"], serde_json::json!("8080"));
+    // A concrete type coerces, which is the recommended fix.
+    assert_eq!(
+        from_value::<Inner>(&ConfigValue::map([("port", env)])).unwrap(),
+        Inner { port: 8080 }
+    );
+}
