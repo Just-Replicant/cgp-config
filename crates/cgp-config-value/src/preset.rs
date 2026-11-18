@@ -8,7 +8,7 @@
 //! | `EmptyConfigValueComponent` | [`EmptyMap`] |
 //! | `LayerMergerComponent` | [`DeepMerge`] |
 //! | `LayerCollectorComponent` | `CollectInOrder` |
-//! | `LayerPreparerComponent` | `IdentityLayer` |
+//! | `LayerPreparerComponent` | `UseDelegate<`[`DefaultPreparers`]`>` (file markers → [`PrepareFileLayer`], others → `IdentityLayer`) |
 //! | `InterpolatorComponent` | `NoInterpolation` (interpolation off) |
 //! | `ConfigDeserializerComponent` | [`SerdeWithProvenance<WarnUnknownKeys>`](crate::SerdeWithProvenance) (unknown keys warn) |
 //! | `ConfigValidatorComponent` | `NoValidation` |
@@ -21,8 +21,21 @@
 //! adds `SourceLoaderComponent` and `ConfigLoaderComponent: LoadLayered<Product![..]>`,
 //! and its error type (`ErrorTypeProviderComponent`, `ErrorRaiserComponent`).
 //!
-//! File-layer preparation (`$version`, `$profiles`) replaces `IdentityLayer` with a
-//! per-marker table once the file sources exist.
+//! Preparation is a per-marker table, [`DefaultPreparers`], that lists every built-in
+//! marker of `cgp_config_core::markers`. A marker without an entry is a compile error,
+//! which is the point: a context that adds its own marker wires its own table, keeping the
+//! built-in entries it uses:
+//!
+//! ```text
+//! LayerPreparerComponent: UseDelegate<new AppPreparers {
+//!     [Defaults, EnvVars]: IdentityLayer,
+//!     ConfigFile: PrepareFileLayer,
+//!     MyVaultLayer: IdentityLayer,
+//! }>,
+//! ```
+//!
+//! Only the file entries (`PrepareFileLayer`) need `HasActiveProfile` (an
+//! `active_profile: String` field); contexts that use only non-file markers do not.
 //!
 //! Behavior changes ship as a new preset type, never as a different meaning of this one.
 //! Mark the context's table `#[unchecked]` and check it with `config_check!`.
@@ -37,19 +50,56 @@ pub mod __entries {
     pub use cgp_config_core::{
         CollectInOrder, ConfigDeserializerComponent, ConfigValidatorComponent,
         ConfigValueTypeProviderComponent, DefaultLoadLimits, DenySecrets,
-        EmptyConfigValueComponent, IdentityLayer, InterpolatorComponent, LayerCollectorComponent,
+        EmptyConfigValueComponent, InterpolatorComponent, LayerCollectorComponent,
         LayerMergerComponent, LayerPreparerComponent, LoadLimitsComponent, LoadReportComponent,
         NoInterpolation, NoValidation, ReportOnLoader, SecretsResolverComponent,
     };
-    pub use cgp_fork::prelude::UseType;
+    pub use cgp_fork::prelude::{UseDelegate, UseType};
 
+    pub use crate::preset::DefaultPreparers;
     pub use crate::{ConfigValue, DeepMerge, EmptyMap, SerdeWithProvenance, WarnUnknownKeys};
 }
 
+use cgp_config_core::IdentityLayer;
+use cgp_config_core::markers::{
+    CliArgs, ConfigDir, ConfigFile, Defaults, DotEnv, DynSources, Embedded, EnvDocument, EnvVars,
+    InMemory, LocalFile, ProfileFile,
+};
 use cgp_fork::prelude::*;
 
 #[allow(clippy::wildcard_imports)]
 use self::__entries::*;
+use crate::PrepareFileLayer;
+
+/// The preparer of every built-in source marker: documents (config, `conf.d`, profile,
+/// local, embedded files) go through [`PrepareFileLayer`], everything else through
+/// `IdentityLayer`. `CoreConfigPreset` wires it as
+/// `LayerPreparerComponent: UseDelegate<DefaultPreparers>`.
+pub struct DefaultPreparers;
+
+// A dispatch table, not a context: the generated check would ask the table itself to be
+// a context, so it is `#[unchecked]`; `config_check!` checks the entries per marker.
+delegate_components! {
+    #[unchecked]
+    DefaultPreparers {
+        [
+            ConfigFile,
+            ConfigDir,
+            ProfileFile,
+            LocalFile,
+            Embedded,
+        ]: PrepareFileLayer,
+        [
+            Defaults,
+            EnvVars,
+            EnvDocument,
+            DotEnv,
+            CliArgs,
+            InMemory,
+            DynSources,
+        ]: IdentityLayer,
+    }
+}
 
 cgp_preset! {
     #[version(1)]
@@ -58,7 +108,7 @@ cgp_preset! {
         EmptyConfigValueComponent: EmptyMap,
         LayerMergerComponent: DeepMerge,
         LayerCollectorComponent: CollectInOrder,
-        LayerPreparerComponent: IdentityLayer,
+        LayerPreparerComponent: UseDelegate<DefaultPreparers>,
         InterpolatorComponent: NoInterpolation,
         ConfigDeserializerComponent: SerdeWithProvenance<WarnUnknownKeys>,
         ConfigValidatorComponent: NoValidation,
