@@ -1,0 +1,39 @@
+[package]
+name                 = "cgp-config-value"
+description          = "The provenance-carrying value tree of cgp-config: Arc nodes, fallible merge, and a type-directed serde Deserializer. `no_std` + `alloc`."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+keywords.workspace     = true
+categories.workspace   = true
+readme               = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+# Forwards `std` to `cgp-config-core` (a `std::sync::Mutex` inside `LoadReport`).
+std = ["cgp-config-core/std"]
+
+[dependencies]
+cgp-config-core = { workspace = true, features = ["alloc"] }
+cgp-fork        = { workspace = true, features = ["alloc"] }
+foldhash        = { workspace = true }
+indexmap        = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+
+[dev-dependencies]
+anyhow   = { workspace = true }
+cgp-fork = { workspace = true, features = ["alloc", "anyhow"] }
+proptest = { workspace = true }
+serde    = { workspace = true, features = ["derive", "std"] }
+
+[lints]
+workspace = true
