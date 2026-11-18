@@ -388,3 +388,176 @@ fn default_options_are_deep() {
         LoadLimits::DEFAULT.max_provenance
     );
 }
+
+// --- Container provenance and the empty-map identity -------------------------------------
+
+#[test]
+fn the_first_layer_onto_the_empty_document_keeps_its_root_origin_and_allocation() {
+    let file = layer(
+        Origin::file("app.toml"),
+        ConfigValue::map([("port", 1.into())]),
+    );
+    let merged = deep(ConfigValue::empty_map(), file.clone()).unwrap();
+    assert!(ConfigValue::ptr_eq(&merged, &file));
+    assert_eq!(merged.meta().origin, Origin::file("app.toml"));
+    assert!(merged.meta().shadowed.is_empty());
+}
+
+#[test]
+fn an_empty_overlay_returns_the_base_allocation() {
+    let file = layer(
+        Origin::file("app.toml"),
+        ConfigValue::map([("port", 1.into())]),
+    );
+    let empty_env = layer(Origin::env("APP"), ConfigValue::empty_map());
+    let merged = deep(file.clone(), empty_env).unwrap();
+    assert!(ConfigValue::ptr_eq(&merged, &file));
+    assert!(merged.eq_with_meta(&file));
+
+    // Nested empty maps are identities too.
+    let base = layer(
+        Origin::file("app.toml"),
+        ConfigValue::map([("http", ConfigValue::map([("port", 1.into())]))]),
+    );
+    let overlay = layer(
+        Origin::env("APP"),
+        ConfigValue::map([("http", ConfigValue::empty_map())]),
+    );
+    let before = at(&base, "http");
+    let merged = deep(base, overlay).unwrap();
+    assert!(ConfigValue::ptr_eq(&at(&merged, "http"), &before));
+}
+
+#[test]
+fn merged_maps_carry_the_winning_origin_and_shadow_the_other() {
+    let file = layer(
+        Origin::file("app.toml"),
+        ConfigValue::map([("http", ConfigValue::map([("port", 1.into())]))]),
+    );
+    let env = layer(
+        Origin::env("APP__HTTP__HOST"),
+        ConfigValue::map([("http", ConfigValue::map([("host", "h".into())]))]),
+    );
+    let merged = deep(deep(ConfigValue::empty_map(), file).unwrap(), env.clone()).unwrap();
+    for node in [&merged, &at(&merged, "http")] {
+        assert_eq!(node.meta().origin, Origin::env("APP__HTTP__HOST"));
+        assert_eq!(node.meta().shadowed.len(), 1);
+        assert_eq!(node.meta().shadowed[0].origin, Origin::file("app.toml"));
+    }
+    // Children keep their own origins.
+    assert_eq!(
+        at(&merged, "http.port").meta().origin,
+        Origin::file("app.toml")
+    );
+
+    // Base-wins keeps the base's origin on the container and records the overlay.
+    let file = layer(
+        Origin::file("app.toml"),
+        ConfigValue::map([("a", 1.into())]),
+    );
+    let joined = merge(
+        file,
+        env,
+        &MergeOptions::DEEP.with_precedence(Precedence::BaseWins),
+    )
+    .unwrap();
+    assert_eq!(joined.meta().origin, Origin::file("app.toml"));
+    assert_eq!(
+        joined.meta().shadowed[0].origin,
+        Origin::env("APP__HTTP__HOST")
+    );
+}
+
+#[test]
+fn root_level_errors_and_explain_can_name_the_file() {
+    // A merge conflict at the root names the origins of both roots.
+    let file = layer(
+        Origin::file("app.toml"),
+        ConfigValue::map([("a", 1.into())]),
+    );
+    let loaded = deep(ConfigValue::empty_map(), file).unwrap();
+    let error = deep(loaded, layer(Origin::env("APP"), ConfigValue::from(1))).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "cannot merge (root): map from app.toml vs integer from env APP"
+    );
+}
+
+#[test]
+fn by_key_arrays_carry_the_winning_origin() {
+    let element =
+        |name: &str, port: i64| ConfigValue::map([("name", name.into()), ("port", port.into())]);
+    let base = layer(
+        Origin::file("app.toml"),
+        ConfigValue::map([("servers", ConfigValue::array([element("a", 1)]))]),
+    );
+    let overlay = layer(
+        Origin::env("APP__SERVERS"),
+        ConfigValue::map([("servers", ConfigValue::array([element("a", 2)]))]),
+    );
+    let options = MergeOptions::DEEP.with_arrays(ArrayMerge::ByKey("name"));
+    let merged = merge(base, overlay, &options).unwrap();
+    let servers = at(&merged, "servers");
+    assert_eq!(servers.meta().origin, Origin::env("APP__SERVERS"));
+    assert_eq!(servers.meta().shadowed[0].origin, Origin::file("app.toml"));
+    assert_eq!(at(&merged, "servers[0].port").as_i64(), Some(2));
+}
+
+// --- Bounded recursion -------------------------------------------------------------------
+
+/// `{"k": {"k": ... {"k": 1}}}`, `depth` levels, built without recursion.
+fn nested(depth: usize) -> ConfigValue {
+    let mut value = ConfigValue::from(1);
+    for _ in 0..depth {
+        value = ConfigValue::map([("k", value)]);
+    }
+    value
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "builds 100k+ nodes; far too slow under Miri")]
+fn a_tree_deeper_than_the_stack_fails_with_limit_exceeded() {
+    // 200k levels overflow a 256 KiB stack many times over if the merge (or the drop of
+    // the trees) recursed per level. With the depth checked before every recursion, the
+    // merge stops at `max_depth` and the drop is iterative.
+    let outcome = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let result = merge(nested(200_000), nested(200_000), &MergeOptions::DEEP);
+            result.map(|_| ()).map_err(|error| error.code())
+        })
+        .unwrap()
+        .join()
+        .expect("the merge must not overflow the stack");
+    assert_eq!(outcome, Err("config::limit_exceeded"));
+}
+
+#[test]
+fn the_depth_limit_is_exact() {
+    let limits = LoadLimits::DEFAULT.with_max_depth(5);
+    let options = MergeOptions::DEEP.with_limits(&limits);
+    // Five levels of maps put the leaf at depth 5: allowed.
+    assert!(merge(nested(5), nested(5), &options).is_ok());
+    let error = merge(nested(6), nested(6), &options).unwrap_err();
+    assert_eq!(error, ConfigError::limit_exceeded("max_depth", 5));
+    assert_eq!(options.max_provenance, limits.max_provenance);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "builds 100k+ nodes; far too slow under Miri")]
+fn deep_trees_drop_without_recursion() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let tree = nested(500_000);
+            let shared = tree.clone();
+            drop(tree);
+            assert_eq!(shared.get("k").map(ConfigValue::is_map), Some(true));
+            drop(shared);
+            let wide_and_deep = ConfigValue::array((0..4).map(|_| nested(100_000)));
+            drop(wide_and_deep);
+        })
+        .unwrap()
+        .join()
+        .expect("dropping must not overflow the stack");
+}

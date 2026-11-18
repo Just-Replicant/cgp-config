@@ -15,8 +15,18 @@
 //!   array over a scalar) is [`ConfigError::MergeConflict`] with both origins.
 //!
 //! The winning node records the node it replaced in its provenance chain
-//! (`Meta::shadow`), capped at [`MergeOptions::max_provenance`]. Unchanged subtrees are
-//! moved or shared, never deep-copied.
+//! (`Meta::shadow`), capped at [`MergeOptions::max_provenance`]. This holds for containers
+//! too: when two non-empty maps (or two arrays under [`ArrayMerge::Append`] or
+//! [`ArrayMerge::ByKey`]) merge, the result carries the winning side's origin and records
+//! the other side, so the root of a loaded document names the file it came from.
+//!
+//! An **empty map is the identity** on either side: merging with it returns the other side
+//! unchanged, data, `Meta`, and allocation (`ConfigValue::ptr_eq` holds). Unchanged subtrees
+//! are moved or shared, never deep-copied.
+//!
+//! Recursion is bounded by [`MergeOptions::max_depth`]: the merge stops with
+//! `ConfigError::LimitExceeded` before it descends past that depth, so a hostile or
+//! accidental deep tree cannot overflow the stack.
 
 use alloc::vec::Vec;
 
@@ -69,6 +79,9 @@ pub struct MergeOptions {
     pub depth: MergeDepth,
     /// Most shadowed origins kept per node.
     pub max_provenance: usize,
+    /// Deepest node the merge descends to (the root is depth 0). Deeper recursion is
+    /// `ConfigError::LimitExceeded { what: "max_depth" }`.
+    pub max_depth: usize,
 }
 
 impl MergeOptions {
@@ -78,6 +91,7 @@ impl MergeOptions {
         arrays: ArrayMerge::Replace,
         depth: MergeDepth::Deep,
         max_provenance: LoadLimits::DEFAULT.max_provenance,
+        max_depth: LoadLimits::DEFAULT.max_depth,
     };
 
     /// Replaces [`precedence`](Self::precedence).
@@ -107,6 +121,20 @@ impl MergeOptions {
         self.max_provenance = max_provenance;
         self
     }
+
+    /// Replaces [`max_depth`](Self::max_depth).
+    #[must_use]
+    pub const fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
+
+    /// Takes `max_depth` and `max_provenance` from `limits`.
+    #[must_use]
+    pub const fn with_limits(self, limits: &LoadLimits) -> Self {
+        self.with_max_depth(limits.max_depth)
+            .with_max_provenance(limits.max_provenance)
+    }
 }
 
 impl Default for MergeOptions {
@@ -133,8 +161,9 @@ impl Default for MergeOptions {
 ///
 /// # Errors
 ///
-/// [`ConfigError::MergeConflict`] on a shape change and [`ConfigError::DuplicateKey`] for
-/// a repeated key under [`ArrayMerge::ByKey`].
+/// [`ConfigError::MergeConflict`] on a shape change, [`ConfigError::DuplicateKey`] for
+/// a repeated key under [`ArrayMerge::ByKey`], and [`ConfigError::LimitExceeded`] when
+/// both trees nest deeper than [`MergeOptions::max_depth`] at the same path.
 pub fn merge(
     base: ConfigValue,
     overlay: ConfigValue,
@@ -173,6 +202,21 @@ fn pick(base: ConfigValue, overlay: ConfigValue, options: &MergeOptions) -> Conf
     winner
 }
 
+/// The metadata of a merged container: the winning side's, with the other side recorded
+/// in its provenance (the container analogue of [`pick`]).
+fn winning_meta(base: Meta, overlay: Meta, options: &MergeOptions) -> Meta {
+    let (mut winner, loser) = match options.precedence {
+        Precedence::OverlayWins => (overlay, base),
+        Precedence::BaseWins => (base, overlay),
+    };
+    winner.shadow(&loser, options.max_provenance);
+    winner
+}
+
+fn is_empty_map(value: &ConfigValue) -> bool {
+    value.as_map().is_some_and(ConfigMap::is_empty)
+}
+
 fn merge_at(
     base: ConfigValue,
     overlay: ConfigValue,
@@ -180,6 +224,11 @@ fn merge_at(
     path: &mut KeyPath,
     level: usize,
 ) -> Result<ConfigValue, ConfigError> {
+    // Checked before any recursion, so the stack depth of a merge is bounded by the limit,
+    // not by the input.
+    if level > options.max_depth {
+        return Err(ConfigError::limit_exceeded("max_depth", options.max_depth));
+    }
     if options.depth == MergeDepth::Shallow && level > 0 {
         return Ok(pick(base, overlay, options));
     }
@@ -223,8 +272,16 @@ fn merge_maps(
     path: &mut KeyPath,
     level: usize,
 ) -> Result<ConfigValue, ConfigError> {
-    let (mut map, meta) = into_map(base);
-    let (overlay_map, _overlay_meta) = into_map(overlay);
+    // The empty map is the identity: return the other side untouched (same `Arc`).
+    if is_empty_map(&overlay) {
+        return Ok(base);
+    }
+    if is_empty_map(&base) {
+        return Ok(overlay);
+    }
+    let (mut map, base_meta) = into_map(base);
+    let (overlay_map, overlay_meta) = into_map(overlay);
+    let meta = winning_meta(base_meta, overlay_meta, options);
     for (key, overlay_value) in overlay_map {
         match map.get_mut(&key) {
             Some(slot) => {
@@ -255,11 +312,7 @@ fn merge_arrays(
             let (mut elements, base_meta) = into_array(base);
             let (overlay_elements, overlay_meta) = into_array(overlay);
             elements.extend(overlay_elements);
-            let (mut meta, other) = match options.precedence {
-                Precedence::OverlayWins => (overlay_meta, base_meta),
-                Precedence::BaseWins => (base_meta, overlay_meta),
-            };
-            meta.shadow(&other, options.max_provenance);
+            let meta = winning_meta(base_meta, overlay_meta, options);
             Ok(ConfigValue::new(Kind::Array(elements), meta))
         }
         ArrayMerge::ByKey(key) => merge_by_key(base, overlay, key, options, path, level),
@@ -301,8 +354,9 @@ fn merge_by_key(
     path: &mut KeyPath,
     level: usize,
 ) -> Result<ConfigValue, ConfigError> {
-    let (mut elements, meta) = into_array(base);
-    let (overlay_elements, _overlay_meta) = into_array(overlay);
+    let (mut elements, base_meta) = into_array(base);
+    let (overlay_elements, overlay_meta) = into_array(overlay);
+    let meta = winning_meta(base_meta, overlay_meta, options);
     check_unique(&elements, key, path)?;
     check_unique(&overlay_elements, key, path)?;
     for overlay_element in overlay_elements {
