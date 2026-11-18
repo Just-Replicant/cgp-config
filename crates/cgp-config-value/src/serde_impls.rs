@@ -8,9 +8,11 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::cell::Cell;
 use core::fmt;
 
-use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use cgp_config_core::{ConfigError, LoadLimits};
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -137,6 +139,165 @@ impl<'de> Visitor<'de> for ValueVisitor {
 impl<'de> Deserialize<'de> for ConfigValue {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         deserializer.deserialize_any(ValueVisitor)
+    }
+}
+
+/// Why [`from_json_limited`] failed.
+pub(crate) enum LimitedJsonError {
+    /// A [`LoadLimits`] bound was hit; the parse stopped there.
+    Limit(ConfigError),
+    /// The text is not valid JSON (serde_json's message, which never quotes the input).
+    Syntax(String),
+}
+
+/// The limits of one bounded parse. `keys_left` is shared with the caller, so several JSON
+/// strings in one tree draw from the same `max_keys` budget.
+struct Budget<'a> {
+    limits: &'a LoadLimits,
+    keys_left: &'a Cell<usize>,
+    exceeded: Cell<Option<ConfigError>>,
+}
+
+impl Budget<'_> {
+    /// Admits one more entry at `depth`, or records the exceeded limit.
+    fn admit<E: de::Error>(&self, depth: usize) -> Result<(), E> {
+        if depth > self.limits.max_depth {
+            return Err(self.fail("max_depth", self.limits.max_depth));
+        }
+        let left = self.keys_left.get();
+        if left == 0 {
+            return Err(self.fail("max_keys", self.limits.max_keys));
+        }
+        self.keys_left.set(left - 1);
+        Ok(())
+    }
+
+    fn fail<E: de::Error>(&self, what: &'static str, limit: usize) -> E {
+        self.exceeded
+            .set(Some(ConfigError::limit_exceeded(what, limit)));
+        E::custom(alloc::format!("limit exceeded: {what} ({limit})"))
+    }
+
+    /// Capacity to reserve for a container: the hint, but never past the remaining budget.
+    fn capacity(&self, hint: Option<usize>) -> usize {
+        hint.unwrap_or(0).min(self.keys_left.get()).min(1024)
+    }
+}
+
+/// Parses JSON `text` into a tree whose root sits at `depth`, admitting every element and
+/// entry against `limits` *while* parsing, so neither nesting nor width can allocate past
+/// `max_depth` / `max_keys` (the tree is never built first and checked afterwards).
+pub(crate) fn from_json_limited(
+    text: &str,
+    limits: &LoadLimits,
+    depth: usize,
+    keys_left: &Cell<usize>,
+) -> Result<ConfigValue, LimitedJsonError> {
+    let budget = Budget {
+        limits,
+        keys_left,
+        exceeded: Cell::new(None),
+    };
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let parsed = LimitedSeed {
+        budget: &budget,
+        depth,
+    }
+    .deserialize(&mut deserializer)
+    .and_then(|value| deserializer.end().map(|()| value));
+    parsed.map_err(|error| match budget.exceeded.take() {
+        Some(limit) => LimitedJsonError::Limit(limit),
+        None => LimitedJsonError::Syntax(alloc::string::ToString::to_string(&error)),
+    })
+}
+
+#[derive(Clone, Copy)]
+struct LimitedSeed<'b, 'a> {
+    budget: &'b Budget<'a>,
+    /// Depth of the value this seed produces.
+    depth: usize,
+}
+
+impl<'de> DeserializeSeed<'de> for LimitedSeed<'_, '_> {
+    type Value = ConfigValue;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<ConfigValue, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+/// An array element: admitted against the budget when the parser has found one, before
+/// the element itself is parsed.
+struct ElementSeed<'b, 'a>(LimitedSeed<'b, 'a>);
+
+impl<'de> DeserializeSeed<'de> for ElementSeed<'_, '_> {
+    type Value = ConfigValue;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<ConfigValue, D::Error> {
+        self.0.budget.admit::<D::Error>(self.0.depth)?;
+        self.0.deserialize(deserializer)
+    }
+}
+
+macro_rules! forward_scalars {
+    ($($method:ident($($arg:ident: $ty:ty)?)),* $(,)?) => {$(
+        fn $method<E: de::Error>(self, $($arg: $ty)?) -> Result<ConfigValue, E> {
+            ValueVisitor.$method($($arg)?)
+        }
+    )*};
+}
+
+impl<'de> Visitor<'de> for LimitedSeed<'_, '_> {
+    type Value = ConfigValue;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        ValueVisitor.expecting(f)
+    }
+
+    forward_scalars! {
+        visit_bool(value: bool),
+        visit_i64(value: i64),
+        visit_u64(value: u64),
+        visit_i128(value: i128),
+        visit_u128(value: u128),
+        visit_f64(value: f64),
+        visit_str(value: &str),
+        visit_string(value: String),
+        visit_unit(),
+        visit_none(),
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<ConfigValue, D::Error> {
+        self.deserialize(deserializer)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<ConfigValue, A::Error> {
+        let child = LimitedSeed {
+            depth: self.depth + 1,
+            ..self
+        };
+        let mut elements = Vec::with_capacity(self.budget.capacity(seq.size_hint()));
+        while let Some(element) = seq.next_element_seed(ElementSeed(child))? {
+            elements.push(element);
+        }
+        Ok(ConfigValue::from(elements))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<ConfigValue, A::Error> {
+        let child = LimitedSeed {
+            depth: self.depth + 1,
+            ..self
+        };
+        let mut map = ConfigMap::with_capacity(self.budget.capacity(access.size_hint()));
+        while let Some(key) = access.next_key::<String>()? {
+            self.budget.admit::<A::Error>(child.depth)?;
+            if map.contains_key(&key) {
+                return Err(de::Error::custom(alloc::format!("duplicate key `{key}`")));
+            }
+            let value = access.next_value_seed(child)?;
+            map.insert(Arc::<str>::from(key), value);
+        }
+        Ok(ConfigValue::from(Kind::Map(map)))
     }
 }
 

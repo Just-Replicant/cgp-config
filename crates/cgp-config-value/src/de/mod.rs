@@ -4,11 +4,24 @@
 //!   `ConfigError::Type { path: http.port, meta: <origin, span, overrides> }`; a missing
 //!   field `ConfigError::Missing { path: http.port }`.
 //! * **Strings are coerced by the target type.** Env and CLI layers store strings. When the
-//!   target is a bool (`true` / `false`, ASCII case-insensitive), an integer or float
-//!   (`FromStr` of the target type), a `char`, or a sequence (JSON array text such as
-//!   `[1, 2]`, never comma splitting), the string is parsed. Other targets read a string
-//!   only as a string. `deserialize_any` (untagged enums, `#[serde(flatten)]`) sees the
-//!   raw string.
+//!   target is a bool (`true` / `false`, ASCII case-insensitive, for values and map keys
+//!   alike), an integer or float (`FromStr` of the target type), a `char`, or a sequence
+//!   (JSON array text such as `[1, 2]`, never comma splitting), the string is parsed.
+//!   Other targets read a string only as a string.
+//! * **`deserialize_any` does not coerce.** Untagged enums, `#[serde(flatten)]`, and
+//!   `serde_json::Value` targets ask serde for "any" value and see an env string such as
+//!   `"8080"` as a string, not a number. This is deliberate: without a target type there is
+//!   no safe way to guess (`"0123"`, `"1e3"`, `"true"` are valid strings). Give such fields
+//!   a concrete type, or use a custom `Deserialize` that calls `deserialize_u16` & co.
+//! * **Floats stay finite.** A finite input that does not fit the target float (`1e300`
+//!   into `f32`, the string `"1e39"` into `f32`) is an error rather than infinity. Explicit
+//!   `inf` / `nan` text or values pass through.
+//! * **JSON array text obeys the load limits.** A sequence written as JSON text is parsed
+//!   under the same `max_depth` and `max_keys` as the rest of the tree (counting from the
+//!   string's own depth and the tree's existing entries) and fails with
+//!   `ConfigError::LimitExceeded` before it allocates past them. [`from_value`] and
+//!   [`from_value_with_unknown`] use [`LoadLimits::DEFAULT`]; [`from_value_with_limits`]
+//!   takes the context's limits.
 //! * **Secret paths never echo input.** On a node whose `Meta::secret` is set, every
 //!   message (including serde's `invalid value: string "..."`) is replaced by a fixed text.
 //! * **Unknown keys are collected, not lost.** A key serde ignores while deserializing a
@@ -24,27 +37,16 @@ use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::fmt;
 use core::str::FromStr;
 
-use cgp_config_core::{ConfigError, KeyPath, Meta, PathSegment, suggest};
+pub use cgp_config_core::UnknownKey;
+use cgp_config_core::{ConfigError, KeyPath, LoadLimits, Meta, PathSegment, suggest};
 use serde::de::{self, DeserializeOwned, Expected, IntoDeserializer, Unexpected, Visitor};
 
 use self::access::{EnumDe, MapDe, SeqDe};
 use crate::{ConfigValue, Kind};
-
-/// A key that the target struct does not declare.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct UnknownKey {
-    /// The key's path.
-    pub path: KeyPath,
-    /// The closest declared field name, when the key looks like a typo of it.
-    pub suggestion: Option<String>,
-    /// The key's provenance.
-    pub meta: Meta,
-}
 
 /// Deserializes `T` from `value`.
 ///
@@ -65,12 +67,28 @@ pub struct UnknownKey {
 /// # Ok::<(), cgp_config_core::ConfigError>(())
 /// ```
 ///
+/// Coercion needs a concrete target type. Targets that ask serde for *any* value
+/// (untagged enums, `#[serde(flatten)]`, `serde_json::Value`) receive the env string
+/// `"8080"` as a string, not a number:
+///
+/// ```
+/// use cgp_config_value::{ConfigValue, from_value};
+///
+/// #[derive(serde::Deserialize, Debug, PartialEq)]
+/// #[serde(untagged)]
+/// enum Port { Number(u16), Named(String) }
+///
+/// let port: Port = from_value(&ConfigValue::from("8080"))?;
+/// assert_eq!(port, Port::Named("8080".into()));
+/// # Ok::<(), cgp_config_core::ConfigError>(())
+/// ```
+///
 /// # Errors
 ///
 /// `ConfigError::Type`, `Missing`, or `Unknown` (for `#[serde(deny_unknown_fields)]`
 /// structs), with the failing path and provenance.
 pub fn from_value<T: DeserializeOwned>(value: &ConfigValue) -> Result<T, ConfigError> {
-    let ctx = Ctx::default();
+    let ctx = Ctx::new(value, &LoadLimits::DEFAULT, false);
     deserialize_root(value, &ctx)
 }
 
@@ -82,9 +100,35 @@ pub fn from_value<T: DeserializeOwned>(value: &ConfigValue) -> Result<T, ConfigE
 pub fn from_value_with_unknown<T: DeserializeOwned>(
     value: &ConfigValue,
 ) -> Result<(T, Vec<UnknownKey>), ConfigError> {
-    let ctx = Ctx {
-        unknown: Some(RefCell::new(Vec::new())),
-    };
+    from_value_with_limits(value, &LoadLimits::DEFAULT)
+}
+
+/// [`from_value_with_unknown`] under `limits`: sequences written as JSON text must stay
+/// within `max_depth` and `max_keys`, counted together with the rest of `value`.
+///
+/// ```
+/// use cgp_config_core::LoadLimits;
+/// use cgp_config_value::{ConfigValue, from_value_with_limits};
+///
+/// #[derive(serde::Deserialize, Debug)]
+/// struct App { ids: Vec<u32> }
+///
+/// let tree = ConfigValue::map([("ids", ConfigValue::from("[1, 2, 3, 4]"))]);
+/// let limits = LoadLimits::DEFAULT.with_max_keys(3);
+/// let error = from_value_with_limits::<App>(&tree, &limits).unwrap_err();
+/// assert_eq!(error.code(), "config::limit_exceeded");
+/// # Ok::<(), cgp_config_core::ConfigError>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`from_value`], and `ConfigError::LimitExceeded` when JSON array text exceeds a
+/// limit.
+pub fn from_value_with_limits<T: DeserializeOwned>(
+    value: &ConfigValue,
+    limits: &LoadLimits,
+) -> Result<(T, Vec<UnknownKey>), ConfigError> {
+    let ctx = Ctx::new(value, limits, true);
     let result = deserialize_root(value, &ctx)?;
     let unknown = ctx.unknown.map(RefCell::into_inner).unwrap_or_default();
     Ok((result, unknown))
@@ -103,9 +147,81 @@ fn deserialize_root<T: DeserializeOwned>(value: &ConfigValue, ctx: &Ctx) -> Resu
     })
 }
 
-#[derive(Default)]
+/// State shared by every node of one deserialization.
 pub(crate) struct Ctx {
     unknown: Option<RefCell<Vec<UnknownKey>>>,
+    limits: LoadLimits,
+    /// Entries that trees expanded from JSON text may still add under `max_keys`.
+    keys_left: Cell<usize>,
+}
+
+impl Ctx {
+    fn new(root: &ConfigValue, limits: &LoadLimits, collect_unknown: bool) -> Self {
+        Self {
+            unknown: collect_unknown.then(|| RefCell::new(Vec::new())),
+            limits: *limits,
+            keys_left: Cell::new(limits.max_keys.saturating_sub(root.count_entries())),
+        }
+    }
+}
+
+/// `true` / `false` in any ASCII case. Values and map keys share this rule.
+pub(crate) fn parse_bool(text: &str) -> Option<bool> {
+    if text.eq_ignore_ascii_case("true") {
+        Some(true)
+    } else if text.eq_ignore_ascii_case("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// A float target type.
+pub(crate) trait Float: Copy + FromStr {
+    fn is_finite(self) -> bool;
+    fn from_f64(value: f64) -> Self;
+}
+
+impl Float for f32 {
+    fn is_finite(self) -> bool {
+        f32::is_finite(self)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn from_f64(value: f64) -> Self {
+        value as f32
+    }
+}
+
+impl Float for f64 {
+    fn is_finite(self) -> bool {
+        f64::is_finite(self)
+    }
+
+    fn from_f64(value: f64) -> Self {
+        value
+    }
+}
+
+/// Whether `text` spells infinity or NaN on purpose (`inf`, `-Infinity`, `NaN`, ...).
+fn is_explicit_non_finite(text: &str) -> bool {
+    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+    ["inf", "infinity", "nan"]
+        .iter()
+        .any(|word| unsigned.eq_ignore_ascii_case(word))
+}
+
+/// Parses a float, rejecting finite text that overflows the target (`"1e39"` as `f32`).
+pub(crate) fn parse_float<T: Float>(text: &str) -> Option<T> {
+    let value = text.parse::<T>().ok()?;
+    (value.is_finite() || is_explicit_non_finite(text)).then_some(value)
+}
+
+/// Converts a number, rejecting a finite number that overflows the target.
+fn number_to_float<T: Float>(number: &crate::Number) -> Option<T> {
+    let wide = number.as_f64();
+    let value = T::from_f64(wide);
+    (value.is_finite() || !wide.is_finite()).then_some(value)
 }
 
 /// The current position as a linked list on the stack; materialized only on error.
@@ -125,6 +241,21 @@ pub(crate) enum Path<'p> {
 }
 
 impl Path<'_> {
+    /// Number of segments from the root (the node's depth in the tree).
+    fn depth(self) -> usize {
+        let mut depth = 0;
+        let mut cursor = self;
+        loop {
+            match cursor {
+                Path::Root => return depth,
+                Path::Key { parent, .. } | Path::Index { parent, .. } => {
+                    depth += 1;
+                    cursor = *parent;
+                }
+            }
+        }
+    }
+
     fn to_key_path(self) -> KeyPath {
         let mut segments = Vec::new();
         let mut cursor = self;
@@ -355,11 +486,11 @@ impl<'v, 'p> ValueDeserializer<'v, 'p> {
             return;
         };
         if let Some(unknown) = &ctx.unknown {
-            unknown.borrow_mut().push(UnknownKey {
-                path: self.path.to_key_path(),
-                suggestion: suggest(key, fields.iter().copied()).map(ToOwned::to_owned),
-                meta: self.value.meta().clone(),
-            });
+            unknown.borrow_mut().push(UnknownKey::new(
+                self.path.to_key_path(),
+                suggest(key, fields.iter().copied()).map(ToOwned::to_owned),
+                self.value.meta().clone(),
+            ));
         }
     }
 
@@ -373,11 +504,25 @@ impl<'v, 'p> ValueDeserializer<'v, 'p> {
                 "expected a sequence written as JSON array text such as [1, 2], found string {text:?}"
             )));
         }
-        let mut parsed: ConfigValue = serde_json::from_str(text).map_err(|error| {
-            self.error(format!(
-                "expected a sequence, found invalid JSON array text: {error}"
-            ))
-        })?;
+        // Without a context (`T::deserialize(&value)`), the defaults apply to this text alone.
+        let standalone;
+        let (limits, keys_left) = match self.ctx {
+            Some(ctx) => (&ctx.limits, &ctx.keys_left),
+            None => {
+                standalone = Cell::new(LoadLimits::DEFAULT.max_keys);
+                (&LoadLimits::DEFAULT, &standalone)
+            }
+        };
+        let mut parsed =
+            crate::serde_impls::from_json_limited(text, limits, self.path.depth(), keys_left)
+                .map_err(|error| match error {
+                    crate::serde_impls::LimitedJsonError::Limit(error) => {
+                        DeserializeError::located(error)
+                    }
+                    crate::serde_impls::LimitedJsonError::Syntax(message) => self.error(format!(
+                        "expected a sequence, found invalid JSON array text: {message}"
+                    )),
+                })?;
         let source = self.value.meta();
         parsed.stamp_origin(&source.origin);
         if source.secret {
@@ -444,10 +589,19 @@ macro_rules! deserialize_integer {
 macro_rules! deserialize_float {
     ($($method:ident => $visit:ident : $t:ty),* $(,)?) => {$(
         fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-            #[allow(clippy::cast_possible_truncation)]
             let value: $t = match self.value.kind() {
-                Kind::Number(number) => number.as_f64() as $t,
-                Kind::String(text) => self.parse_str::<$t>(text, stringify!($t))?,
+                Kind::Number(number) => number_to_float::<$t>(number).ok_or_else(|| {
+                    self.error(format!(
+                        concat!("expected ", stringify!($t), ", found {} (out of range)"),
+                        number
+                    ))
+                })?,
+                Kind::String(text) => parse_float::<$t>(text).ok_or_else(|| {
+                    self.error(format!(
+                        concat!("expected ", stringify!($t), ", found string {:?}"),
+                        text
+                    ))
+                })?,
                 _ => return Err(self.invalid_type(&visitor)),
             };
             visitor.$visit(value).map_err(|e| self.locate(e))
@@ -477,13 +631,11 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer<'_, '_> {
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         let value = match self.value.kind() {
             Kind::Bool(value) => *value,
-            Kind::String(text) if text.eq_ignore_ascii_case("true") => true,
-            Kind::String(text) if text.eq_ignore_ascii_case("false") => false,
-            Kind::String(text) => {
-                return Err(self.error(format!(
+            Kind::String(text) => parse_bool(text).ok_or_else(|| {
+                self.error(format!(
                     "expected bool (true or false), found string {text:?}"
-                )));
-            }
+                ))
+            })?,
             _ => return Err(self.invalid_type(&visitor)),
         };
         visitor.visit_bool(value).map_err(|e| self.locate(e))

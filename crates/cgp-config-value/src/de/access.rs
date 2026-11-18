@@ -133,7 +133,8 @@ impl<'de> de::MapAccess<'de> for MapDe<'_, '_> {
 }
 
 /// Deserializes a map key or a variant name. Keys are strings; numeric and bool targets
-/// (`HashMap<u16, _>`) parse them.
+/// (`HashMap<u16, _>`) parse them with the same rules as values (bools in any ASCII case,
+/// floats that stay finite).
 pub(crate) struct KeyDe<'k> {
     pub(crate) key: &'k str,
 }
@@ -159,8 +160,37 @@ impl<'de> de::Deserializer<'de> for KeyDe<'_> {
         visitor.visit_str(self.key)
     }
 
+    fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        let value = super::parse_bool(self.key).ok_or_else(|| {
+            <DeserializeError as de::Error>::custom(format!(
+                "expected a bool map key (true or false), found {:?}",
+                self.key
+            ))
+        })?;
+        visitor.visit_bool(value)
+    }
+
+    fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        let value = super::parse_float::<f32>(self.key).ok_or_else(|| {
+            <DeserializeError as de::Error>::custom(format!(
+                "expected a f32 map key, found {:?}",
+                self.key
+            ))
+        })?;
+        visitor.visit_f32(value)
+    }
+
+    fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        let value = super::parse_float::<f64>(self.key).ok_or_else(|| {
+            <DeserializeError as de::Error>::custom(format!(
+                "expected a f64 map key, found {:?}",
+                self.key
+            ))
+        })?;
+        visitor.visit_f64(value)
+    }
+
     parse_key! {
-        deserialize_bool => visit_bool: bool,
         deserialize_i8 => visit_i8: i8,
         deserialize_i16 => visit_i16: i16,
         deserialize_i32 => visit_i32: i32,
@@ -171,8 +201,6 @@ impl<'de> de::Deserializer<'de> for KeyDe<'_> {
         deserialize_u32 => visit_u32: u32,
         deserialize_u64 => visit_u64: u64,
         deserialize_u128 => visit_u128: u128,
-        deserialize_f32 => visit_f32: f32,
-        deserialize_f64 => visit_f64: f64,
         deserialize_char => visit_char: char,
     }
 
