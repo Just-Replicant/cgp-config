@@ -1,3 +1,5 @@
+//! [`ConfigMap`], the insertion-ordered map of the value tree, and its iterators.
+
 use alloc::sync::Arc;
 use core::fmt;
 
@@ -5,13 +7,17 @@ use indexmap::IndexMap;
 
 use crate::ConfigValue;
 
-type Hasher = foldhash::fast::FixedState;
+/// A per-map random seed. Iteration order is insertion order and never depends on the
+/// hasher, so randomizing it costs no determinism and keeps keys from untrusted files from
+/// being chosen to collide (hash flooding). With the `std` feature the seed also mixes in
+/// the clock and an allocator address; without it, address-space randomization.
+type Hasher = foldhash::fast::RandomState;
 
 /// An insertion-ordered map from keys to values.
 ///
 /// Order is stable, so diffs, dumps, and templates are deterministic. Keys are `Arc<str>`,
 /// so cloning a map clones reference counts, not strings. Equality ignores order, like a
-/// TOML table or JSON object.
+/// TOML table or JSON object. Hashing is randomly seeded per map.
 #[derive(Clone, Default, PartialEq)]
 pub struct ConfigMap {
     entries: IndexMap<Arc<str>, ConfigValue, Hasher>,
@@ -102,6 +108,11 @@ impl ConfigMap {
     pub fn values_mut(&mut self) -> impl ExactSizeIterator<Item = &mut ConfigValue> {
         self.entries.values_mut()
     }
+
+    /// Removes every entry and yields the values (used by the iterative drop).
+    pub(crate) fn drain_values(&mut self) -> impl Iterator<Item = ConfigValue> + '_ {
+        self.entries.drain(..).map(|(_, value)| value)
+    }
 }
 
 impl fmt::Debug for ConfigMap {
@@ -128,10 +139,57 @@ impl<K: Into<Arc<str>>> Extend<(K, ConfigValue)> for ConfigMap {
 
 impl IntoIterator for ConfigMap {
     type Item = (Arc<str>, ConfigValue);
-    type IntoIter = indexmap::map::IntoIter<Arc<str>, ConfigValue>;
+    type IntoIter = IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.entries.into_iter()
+        IntoIter {
+            inner: self.entries.into_iter(),
+        }
+    }
+}
+
+/// The owning iterator of a [`ConfigMap`], in insertion order.
+///
+/// A named wrapper, so the public signature does not depend on the map's backing crate.
+pub struct IntoIter {
+    inner: indexmap::map::IntoIter<Arc<str>, ConfigValue>,
+}
+
+impl Iterator for IntoIter {
+    type Item = (Arc<str>, ConfigValue);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+
+    fn count(self) -> usize {
+        self.inner.len()
+    }
+}
+
+impl DoubleEndedIterator for IntoIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner.next_back()
+    }
+}
+
+impl ExactSizeIterator for IntoIter {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+}
+
+impl core::iter::FusedIterator for IntoIter {}
+
+impl fmt::Debug for IntoIter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IntoIter")
+            .field("remaining", &self.inner.len())
+            .finish()
     }
 }
 
@@ -171,5 +229,39 @@ mod tests {
         assert_eq!(map.remove("b").and_then(|v| v.as_i64()), Some(3));
         assert_eq!(format!("{map:?}"), "{\"a\": 9}");
         assert_eq!(map.into_iter().count(), 1);
+    }
+
+    #[test]
+    fn owning_iterator_is_ordered_exact_and_double_ended() {
+        let map: ConfigMap = [
+            ("a", ConfigValue::from(1)),
+            ("b", ConfigValue::from(2)),
+            ("c", ConfigValue::from(3)),
+        ]
+        .into_iter()
+        .collect();
+        let mut iter = map.into_iter();
+        assert_eq!(iter.len(), 3);
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        assert_eq!(iter.next().map(|(k, _)| k), Some("a".into()));
+        assert_eq!(iter.next_back().map(|(k, _)| k), Some("c".into()));
+        assert_eq!(format!("{iter:?}"), "IntoIter { remaining: 1 }");
+        assert_eq!(
+            iter.next().map(|(k, v)| (k, v.as_i64())),
+            Some(("b".into(), Some(2)))
+        );
+        assert!(iter.next().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn hashing_is_seeded_per_map_and_order_is_insertion_order() {
+        // Two maps with the same insertion order iterate identically, whatever their seeds.
+        let keys = ["z", "a", "m", "b", "y"];
+        let first: ConfigMap = keys.iter().map(|k| (*k, ConfigValue::null())).collect();
+        let second: ConfigMap = keys.iter().map(|k| (*k, ConfigValue::null())).collect();
+        assert_eq!(first.keys().collect::<Vec<_>>(), keys);
+        assert_eq!(second.keys().collect::<Vec<_>>(), keys);
+        assert_eq!(first, second);
     }
 }
