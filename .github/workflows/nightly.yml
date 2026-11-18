@@ -21,6 +21,16 @@ jobs:
           components: miri, rust-src
       - run: cargo xtask miri
 
+  cgp-fork-main:
+    # Early warning: the next cgp-fork release must not break us. Patches cgp-fork to the
+    # fork's default branch (see `cargo xtask fork-main`); the lock file is not committed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask fork-main
+
   facade-powerset:
     runs-on: ubuntu-latest
     steps:

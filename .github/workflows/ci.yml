@@ -102,3 +102,20 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask coverage
+
+  semver:
+    # API compatibility against the PR's base branch. Advisory until the 0.1.0 tag gives a
+    # real baseline (plan §15); then drop `continue-on-error` and also run it in release-plz.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: taiki-e/install-action@cargo-semver-checks
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask semver
+        env:
+          SEMVER_BASELINE: origin/${{ github.base_ref }}

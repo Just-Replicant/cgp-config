@@ -9,20 +9,27 @@
 //! cargo xtask nostd       # build core and value for thumbv7em-none-eabihf
 //! cargo xtask docs        # rustdoc with broken intra-doc links denied
 //! cargo xtask deny        # cargo-deny licenses, bans, advisories, sources
-//! cargo xtask miri        # Miri on the value crate (nightly)
-//! cargo xtask coverage    # llvm-cov, fail under 95% lines (value; core + value)
+//! cargo xtask miri        # Miri on core and value (nightly), isolation kept on
+//! cargo xtask coverage    # llvm-cov: gate 95% lines on value; core + value printed only
+//! cargo xtask semver      # cargo-semver-checks against $SEMVER_BASELINE (default origin/main)
+//! cargo xtask fork-main   # build and test against cgp-fork's main branch (early warning)
 //! ```
 //!
-//! The tools beyond rustup components (`cargo-hack`, `cargo-deny`, `cargo-llvm-cov`) must
-//! be installed; a missing tool fails its step with an install hint.
+//! The tools beyond rustup components (`cargo-hack`, `cargo-deny`, `cargo-llvm-cov`,
+//! `cargo-semver-checks`) must be installed; a missing tool fails its step with an install
+//! hint.
 
-use std::env;
 use std::process::{Command, ExitCode};
+use std::{env, fs};
 
 /// The embedded target used to prove `no_std` builds.
 const NO_STD_TARGET: &str = "thumbv7em-none-eabihf";
 /// Minimum line coverage of `cgp-config-value`.
 const VALUE_COVERAGE: &str = "95";
+/// The `cgp-fork` repository; `fork-main` builds against its default branch.
+const CGP_FORK_GIT: &str = "https://github.com/Just-Replicant/cgp-fork";
+/// The published crates checked by `semver`.
+const PUBLISHED: &[&str] = &["cgp-config", "cgp-config-core", "cgp-config-value"];
 
 type Step = fn() -> Result<(), String>;
 
@@ -34,11 +41,21 @@ const STEPS: &[(&str, Step, &str)] = &[
     ("nostd", nostd, "no_std builds for an embedded target"),
     ("docs", docs, "rustdoc, broken links denied"),
     ("deny", deny, "cargo-deny"),
-    ("miri", miri, "Miri on the value crate"),
+    ("miri", miri, "Miri on core and value"),
     ("coverage", coverage, "line coverage gate"),
+    (
+        "semver",
+        semver,
+        "cargo-semver-checks against a baseline rev",
+    ),
+    (
+        "fork-main",
+        fork_main,
+        "build and test against cgp-fork main",
+    ),
 ];
 
-/// Steps of `ci`. Miri and coverage run in their own CI jobs.
+/// Steps of `ci`. Miri, coverage, semver, and fork-main run in their own CI jobs.
 const CI: &[&str] = &["fmt", "clippy", "test", "hack", "nostd", "docs", "deny"];
 
 fn main() -> ExitCode {
@@ -264,14 +281,20 @@ fn deny() -> Result<(), String> {
 }
 
 fn miri() -> Result<(), String> {
-    // proptest reads its failure-persistence files, which Miri's isolation forbids.
+    // Isolation stays on: no test may touch the host file system, clock, or environment.
+    // proptest's failure persistence is the one thing that would (it reads and writes
+    // `*.proptest-regressions` files), so it is switched off instead of lifting isolation.
+    // Isolation also hides the host environment, so that one variable is forwarded.
     let flags = format!(
-        "{} -Zmiri-disable-isolation",
+        "{} -Zmiri-env-forward=PROPTEST_DISABLE_FAILURE_PERSISTENCE",
         env::var("MIRIFLAGS").unwrap_or_default()
     );
     cargo_env(
         Some("nightly"),
-        &[("MIRIFLAGS", flags)],
+        &[
+            ("PROPTEST_DISABLE_FAILURE_PERSISTENCE", "1".to_owned()),
+            ("MIRIFLAGS", flags.trim_start().to_owned()),
+        ],
         &[
             "miri",
             "test",
@@ -288,8 +311,7 @@ fn coverage() -> Result<(), String> {
     require("llvm-cov", "cargo install cargo-llvm-cov --locked")?;
     // Stale profiles from earlier builds skew the numbers; start clean.
     cargo(None, &["llvm-cov", "clean", "--workspace"])?;
-    // The gate is on the value crate (the plan's target). Core is measured in the same run
-    // so its numbers show up in the report; its providers are exercised by value's tests.
+    // The gate is on the value crate only (the plan's target).
     cargo(
         None,
         &[
@@ -302,6 +324,8 @@ fn coverage() -> Result<(), String> {
             VALUE_COVERAGE,
         ],
     )?;
+    // Core plus value is printed for information, not gated: core's providers are mostly
+    // exercised through value's tests, and its no-alloc paths are not measurable here.
     cargo(
         None,
         &[
@@ -312,8 +336,43 @@ fn coverage() -> Result<(), String> {
             "cgp-config-value",
             "--all-features",
             "--summary-only",
-            "--fail-under-lines",
-            VALUE_COVERAGE,
         ],
     )
+}
+
+fn semver() -> Result<(), String> {
+    require(
+        "semver-checks",
+        "cargo install cargo-semver-checks --locked",
+    )?;
+    // Nothing is on crates.io before 0.1, so the baseline is a git revision: the PR's
+    // base branch in CI, `origin/main` locally.
+    let baseline = env::var("SEMVER_BASELINE").unwrap_or_else(|_| "origin/main".to_owned());
+    let mut args = vec![
+        "semver-checks",
+        "check-release",
+        "--baseline-rev",
+        &baseline,
+    ];
+    for package in PUBLISHED {
+        args.extend_from_slice(&["--package", package]);
+    }
+    cargo(None, &args)
+}
+
+fn fork_main() -> Result<(), String> {
+    // Patch `cgp-fork` (and so its macro crates) to the fork's default branch. Cargo
+    // rewrites Cargo.lock for the patched source; the lock file is restored afterwards so
+    // a local run leaves the tree unchanged.
+    let patch = format!("patch.crates-io.cgp-fork.git=\"{CGP_FORK_GIT}\"");
+    let lock_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../Cargo.lock");
+    let lock = fs::read(lock_path).map_err(|error| format!("cannot read Cargo.lock: {error}"))?;
+    let result = ["build", "test"].iter().try_for_each(|command| {
+        cargo(
+            None,
+            &["--config", &patch, command, "--workspace", "--all-features"],
+        )
+    });
+    fs::write(lock_path, lock).map_err(|error| format!("cannot restore Cargo.lock: {error}"))?;
+    result
 }
