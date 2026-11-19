@@ -1,0 +1,56 @@
+[package]
+name                 = "cgp-config-providers"
+description          = "Std sources and presets for cgp-config: bootstrap, config-file search, profile/local/conf.d files, env snapshot mapping, dotenv, CLI overrides, TwelveFactorPreset, and the garde/validator adapters."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+keywords.workspace     = true
+categories.workspace   = true
+readme               = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["toml"]
+# Document formats (forwarded to `cgp-config-formats`).
+toml = ["cgp-config-formats/toml"]
+json = ["cgp-config-formats/json"]
+# `.env` files as a layer (`LoadDotenv`, `TwelveFactorDotenv`).
+dotenv = []
+# `--config`, `--profile`, `--set key=value` helpers for clap (`TwelveFactorCli`).
+clap = ["dep:clap"]
+# `${...}` expansion of opted-in fields (`InterpolatingPreset`).
+interpolate = ["cgp-config-value/interpolate"]
+# Validation adapters.
+validate-garde     = ["dep:garde"]
+validate-validator = ["dep:validator"]
+
+[dependencies]
+cgp-config-core    = { workspace = true, features = ["std"] }
+cgp-config-formats = { workspace = true, features = ["std"] }
+cgp-config-value   = { workspace = true, features = ["std"] }
+cgp-fork           = { workspace = true, features = ["alloc"] }
+directories        = { workspace = true }
+serde              = { workspace = true, features = ["std"] }
+zeroize            = { workspace = true }
+
+clap      = { workspace = true, optional = true }
+garde     = { workspace = true, optional = true }
+validator = { workspace = true, optional = true }
+
+[dev-dependencies]
+cgp-fork  = { workspace = true, features = ["alloc", "anyhow"] }
+clap      = { workspace = true, features = ["std"] }
+garde     = { workspace = true, features = ["derive"] }
+serde     = { workspace = true, features = ["derive", "std"] }
+tempfile  = { workspace = true }
+validator = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true
