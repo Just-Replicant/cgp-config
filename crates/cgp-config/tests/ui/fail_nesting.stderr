@@ -1,0 +1,17 @@
+error: `default` cannot be used on a nested section: a nested section takes defaults from its own fields
+  --> tests/ui/fail_nesting.rs:10:22
+   |
+10 |     #[config(nested, default = 1)]
+   |                      ^^^^^^^
+
+error: use `#[config(flatten)]` alone: cgp-config moves the keys itself, so `serde(flatten)` must not be set
+  --> tests/ui/fail_nesting.rs:13:13
+   |
+13 |     #[serde(flatten)]
+   |             ^^^^^^^
+
+error: only a single section can be flattened (not a list or a map)
+  --> tests/ui/fail_nesting.rs:15:14
+   |
+15 |     #[config(flatten)]
+   |              ^^^^^^^

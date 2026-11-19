@@ -1,0 +1,35 @@
+error: `migrate` is available from cgp-config 0.2 (schema migrations)
+ --> tests/ui/fail_attributes.rs:4:10
+  |
+4 | #[config(migrate(from = 1))]
+  |          ^^^^^^^^^^^^^^^^^
+
+error: unknown `config` attribute `sectoin`; expected one of: section, version, env_prefix, deny_unknown, rename_all, crate (and `migrate`, from 0.2)
+ --> tests/ui/fail_attributes.rs:5:10
+  |
+5 | #[config(sectoin = "typo")]
+  |          ^^^^^^^
+
+error: `default` needs a value (`default = 8080`); for `Default::default()` use `#[serde(default)]`
+ --> tests/ui/fail_attributes.rs:7:14
+  |
+7 |     #[config(default)]
+  |              ^^^^^^^
+
+error: a duration default is a string with a unit (`default = "30s"`)
+ --> tests/ui/fail_attributes.rs:9:34
+  |
+9 |     #[config(parse = "duration", default = 30)]
+  |                                  ^^^^^^^
+
+error: an env name must not contain the separator `__`
+  --> tests/ui/fail_attributes.rs:11:20
+   |
+11 |     #[config(env = "A__B")]
+   |                    ^^^^^^
+
+error: unknown reload policy `sometimes`; expected one of: live, restart
+  --> tests/ui/fail_attributes.rs:13:23
+   |
+13 |     #[config(reload = "sometimes")]
+   |                       ^^^^^^^^^^^

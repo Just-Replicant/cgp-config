@@ -17,13 +17,38 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-# The plan's eventual default set is `std`, `derive`, `toml`; `derive` and `toml` are
-# added when their crates land (P2/P3).
-default = ["std"]
-# Std-only conveniences. Implies `alloc`.
-std = ["alloc", "cgp-config-core/std", "cgp-config-value?/std"]
-# The value tree, merge, the serde deserializer, `ConfigError`, and `CoreConfigPreset`.
-alloc = ["dep:cgp-config-value", "cgp-config-core/alloc", "cgp-fork/alloc"]
+default = ["std", "derive", "toml"]
+# Std sources and presets (files, search, env snapshot, `TwelveFactorPreset`,
+# `StdLoader`, `from_toml_str`). Implies `alloc`.
+std = [
+    "alloc",
+    "dep:cgp-config-providers",
+    "cgp-config-core/std",
+    "cgp-config-value/std",
+    "cgp-config-formats/std",
+]
+# The value tree, merge, the serde deserializer, `ConfigError`, `CoreConfigPreset`, and
+# the format crate (no format without `toml` / `json`).
+alloc = [
+    "dep:cgp-config-value",
+    "dep:cgp-config-formats",
+    "cgp-config-core/alloc",
+    "cgp-fork/alloc",
+]
+# `#[derive(ConfigSection)]`.
+derive = ["alloc", "dep:cgp-config-derive"]
+# Document formats.
+toml = ["alloc", "cgp-config-formats/toml", "cgp-config-providers?/toml"]
+json = ["alloc", "cgp-config-formats/json", "cgp-config-providers?/json"]
+# `.env` files (`LoadDotenv`, `TwelveFactorDotenv`).
+dotenv = ["std", "cgp-config-providers/dotenv"]
+# clap helpers and `TwelveFactorCli` / `TwelveFactorDotenvCli`.
+clap = ["std", "cgp-config-providers/clap"]
+# `${...}` in opted-in fields (`InterpolateOptedIn`, `InterpolatingPreset`).
+interpolate = ["alloc", "cgp-config-value/interpolate", "cgp-config-providers?/interpolate"]
+# Validation adapters (users derive the library's trait themselves).
+validate-garde     = ["std", "cgp-config-providers/validate-garde"]
+validate-validator = ["std", "cgp-config-providers/validate-validator"]
 
 # Pass-through features of the CGP fork.
 anyhow      = ["cgp-fork/anyhow"]
@@ -36,14 +61,20 @@ log-tracing = ["cgp-fork/log-tracing"]
 inspect     = ["cgp-fork/inspect"]
 
 [dependencies]
-cgp-config-core  = { workspace = true }
-cgp-config-value = { workspace = true, optional = true }
-cgp-fork         = { workspace = true }
+cgp-config-core      = { workspace = true }
+cgp-config-derive    = { workspace = true, optional = true }
+cgp-config-formats   = { workspace = true, optional = true }
+cgp-config-providers = { workspace = true, optional = true }
+cgp-config-value     = { workspace = true, optional = true }
+cgp-fork             = { workspace = true }
 
 [dev-dependencies]
-anyhow   = { workspace = true }
-cgp-fork = { workspace = true, features = ["alloc", "anyhow"] }
-serde    = { workspace = true, features = ["derive", "std"] }
+anyhow    = { workspace = true }
+cgp-fork  = { workspace = true, features = ["alloc", "anyhow"] }
+garde     = { workspace = true, features = ["derive"] }
+serde     = { workspace = true, features = ["derive", "std"] }
+tempfile  = { workspace = true }
+trybuild  = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,0 +1,11 @@
+error: ConfigSection is derived for structs with named fields; an enum is a value, not a section
+ --> tests/ui/fail_shapes.rs:4:1
+  |
+4 | enum Mode {
+  | ^^^^
+
+error: ConfigSection needs named fields (a tuple struct has no keys)
+ --> tests/ui/fail_shapes.rs:9:13
+  |
+9 | struct Tuple(u8);
+  |             ^^^^

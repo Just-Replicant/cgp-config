@@ -1,0 +1,18 @@
+error[E0277]: `Plain` is not a config section
+  --> tests/ui/fail_not_a_section.rs:10:12
+   |
+10 |     plain: Plain,
+   |            ^^^^^ no `ConfigSection` metadata
+   |
+help: the trait `cgp_config::ConfigSection` is not implemented for `Plain`
+  --> tests/ui/fail_not_a_section.rs:3:1
+   |
+ 3 | struct Plain {
+   | ^^^^^^^^^^^^
+   = note: derive it with `#[derive(ConfigSection)]`, or drop `#[config(nested)]` / `flatten` to read the field as a plain value
+help: the trait `cgp_config::ConfigSection` is implemented for `App`
+  --> tests/ui/fail_not_a_section.rs:7:30
+   |
+ 7 | #[derive(serde::Deserialize, ConfigSection)]
+   |                              ^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `ConfigSection` (in Nightly builds, run with -Z macro-backtrace for more info)

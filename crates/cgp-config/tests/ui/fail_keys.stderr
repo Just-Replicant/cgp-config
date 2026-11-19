@@ -1,0 +1,23 @@
+error: `$version`: keys starting with `$` are reserved ($version, $profiles, $include)
+ --> tests/ui/fail_keys.rs:6:5
+  |
+6 |     version: u8,
+  |     ^^^^^^^
+
+error: `config(skip)` needs `#[serde(skip)]` (or `skip_deserializing`) too, so both agree the field is not read
+  --> tests/ui/fail_keys.rs:10:14
+   |
+10 |     #[config(skip)]
+   |              ^^^^
+
+error: key `b` is also used by `a` (keys and aliases must differ, ignoring ASCII case, so env names stay unambiguous)
+ --> tests/ui/fail_keys.rs:9:5
+  |
+9 |     b: u8,
+  |     ^
+
+error: `env_raw` name `PORT` is also used by `d`
+  --> tests/ui/fail_keys.rs:15:5
+   |
+15 |     e: u16,
+   |     ^
