@@ -1,0 +1,23 @@
+[package]
+name                 = "cgp-config-derive"
+description          = "#[derive(ConfigSection)] for cgp-config. Use it through the facade (`cgp_config::ConfigSection`)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+keywords.workspace     = true
+categories.workspace   = true
+readme               = "README.md"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+cgp-config-derive-impl = { workspace = true }
+proc-macro2            = { workspace = true }
+
+[lints]
+workspace = true
