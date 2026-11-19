@@ -8,6 +8,53 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **P2 — formats, sources, presets.**
+  - `cgp-config-formats` (`#![no_std]` + `alloc`): TOML (feature `toml`, default) and a
+    strict JSON parser (feature `json`) with a span on every node, duplicate keys
+    rejected, `max_bytes`/`max_depth`/`max_keys` enforced while parsing, and redacting
+    renderers; `TomlFormat`, `JsonFormat`, `EnabledFormats`, `FormatKind`, `LineIndex`.
+    A conformance suite checks both formats against the same documents.
+  - `cgp-config-providers` (std): `Bootstrap` (env prefix, one env snapshot, profile,
+    config location, `.env` path, `--config`/`--profile`/`--env-prefix`/`--set`; `clap`
+    integration behind `clap`), `ConfigLocation`/`SearchPath` (explicit path, then
+    `$CONFIGURATION_DIRECTORY`, the working directory, the executable's directory, the
+    platform config directory), file sources (`LoadFile<Fmt>`, `LoadFileAuto`,
+    `LoadProfileFile`, `LoadLocalFile`, `LoadConfDir`, `LoadEmbedded<Fmt>`),
+    `ReadStdFile` with a torn-read retry and Unix permission warnings, `ReadFromMap` for
+    tests, `LoadEnvVars` (`{PREFIX}__A__B`, `env_raw` names), `LoadEnvDocument`
+    (`{PREFIX}_DOCUMENT`, `json`), `LoadDotenv` with a hermetic `.env` parser (`dotenv`),
+    `LoadCliOverrides`, `LoadFromField`, `LoadDynSources`, the `StdSources` table, and the
+    presets `TwelveFactorPreset`, `TwelveFactorLocal`, `TwelveFactorConfDir`,
+    `TwelveFactorDotenv`, `TwelveFactorCli`, `TwelveFactorDotenvCli`,
+    `InterpolatingPreset`, `TestConfigPreset`; `StdLoader`, `MemoryLoader`,
+    `from_toml_str`, `from_json_str`, `from_defaults`.
+  - `cgp-config-core`: `EnvSnapshot`, `HasEnvSnapshot`, `HasEnvPrefix`;
+    `HasRootConfigMeta` (`RootConfigMetaComponent`, `NoConfigMeta`, `UseConfigMeta<T>`);
+    `CanLog` events (`SourceLoaded`, `LayerSkipped`) with `NoopLogger`;
+    `Origin::DotEnv`.
+- **P3 — derive and validation.**
+  - `#[derive(ConfigSection)]` (`cgp-config-derive`, `cgp-config-derive-impl`): typed
+    const defaults, `parse = "duration" | "bytes"`, `nested`, `flatten`, `rename`/
+    `alias`/`rename_all` (serde attributes honoured), `env`/`env_raw`, `secret`,
+    `interpolate`, per-section `deny_unknown`, doc comments as descriptions; misuse is a
+    spanned compile error (trybuild suite).
+  - `cgp-config-core`: `ConfigSection`, `ConfigMeta`, `FieldMeta`, the duration and
+    byte-size parsers (`30` is rejected, `30s` parses), `AggregateError`,
+    `ValidationRule`, `ValidateFn`, `AllOf`, `ValidateSections`, `Nested`.
+  - `cgp-config-value`: the schema pass (`schema::canonicalize`, `normalize`): defaults
+    from `ConfigMeta`, flatten, aliases, mounts, unit parsing, secret marking, every
+    missing required field reported at once; `KeyedMerge`; `LoadDefaults`;
+    `InterpolateOptedIn` (feature `interpolate`; `${` in fields that did not opt in is
+    left as written).
+  - `ValidateWithGarde` (`validate-garde`) and `ValidateWithValidator`
+    (`validate-validator`) adapters.
+  - `fuzz/` (cargo-fuzz, outside the workspace): TOML and JSON parse/render round-trip,
+    the interpolation lexer, env mapping, the `.env` parser, and derive input.
+- The facade re-exports all of the above behind matching features (default:
+  `std`, `derive`, `toml`); `xtask` checks, documents, and semver-checks the new crates.
+
+### Added (P0, P1)
+
 - Workspace scaffolding (P0): edition 2024, MSRV 1.99, toolchain 1.99.1, workspace lints,
   `rustfmt`, `cargo-deny`, `release-plz`, GitHub Actions CI and nightly jobs, and an
   `xtask` runner (`ci`, `fmt`, `clippy`, `test`, `hack`, `nostd`, `docs`, `deny`, `miri`,
@@ -45,6 +92,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Breaking:** `CoreConfigPreset` wires `RootConfigMetaComponent: NoConfigMeta`.
+- **Breaking:** `PrepareFileLayer` requires `HasRootConfigMeta` and canonicalizes the
+  document and every `$profiles` table against the root schema, so every layer has the
+  same shape (serde keys, flattened sections under their field) before merging; an alias
+  in a file overrides a default under the field's current name.
+- **Breaking:** `SerdeWithProvenance` requires `HasRootConfigMeta` and `CanReportWarning`:
+  with a schema it normalizes the tree first, and unknown keys in a `deny_unknown` section
+  fail whatever the policy.
+- `DefaultPreparers` maps `ConfigDir` to `IdentityLayer`: `LoadConfDir` prepares each
+  `conf.d` file on its own.
 - **Breaking:** `CoreConfigPreset` wires `LayerPreparerComponent: UseDelegate<DefaultPreparers>`
   instead of `IdentityLayer`. Contexts using their own source markers add their own
   `UseDelegate` table; a marker without a preparer is a compile error. ADR-001 records the

@@ -3,6 +3,7 @@
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-prototype-findings.md) | Prototype findings and where the design plan supersedes the prototype | Accepted |
+| [0002](0002-phase-2-3-implementation.md) | Phase 2 and 3 implementation choices | Accepted |
 
 New records copy the headings of 0001 (Context, Decision, Consequences) and take the next
 number. A record is never edited after acceptance except to mark it superseded, or to

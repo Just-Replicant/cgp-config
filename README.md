@@ -8,11 +8,12 @@ how layers merge, how values deserialize, and how the result is validated. Every
 CGP component with swappable providers, so a test context, a staging binary, and a
 production binary can wire different sources and checks with no `cfg!` sprawl and no `dyn`.
 
-> **Status: 0.1.0-alpha.1 (phases P0 and P1 of the [design plan](docs/design-plan.md)).**
-> The component set, value tree, merge, deserializer, errors, and `CoreConfigPreset` are
-> in place. File, environment, and CLI sources (P2), the derive and validation adapters
-> (P3), and secrets (P4) are not implemented yet; until then a context supplies its own
-> `SourceLoader` providers.
+> **Status: 0.1.0-alpha.1 (phases P0–P3 of the [design plan](docs/design-plan.md)).**
+> The component set, value tree, merge, deserializer, errors, `CoreConfigPreset` (P1);
+> TOML/JSON formats, file/env/`.env`/CLI sources, `Bootstrap`, and the twelve-factor
+> presets (P2); `#[derive(ConfigSection)]`, unit parsers, and the validation combinators
+> and adapters (P3) are in place. Secrets (P4) and the rest of the plan are not
+> implemented yet.
 
 ## What is here
 
@@ -21,6 +22,10 @@ production binary can wire different sources and checks with no `cfg!` sprawl an
 | [`cgp-config`](crates/cgp-config) | Facade: re-exports and `prelude`. Applications depend on this |
 | [`cgp-config-core`](crates/cgp-config-core) | `#![no_std]` component traits, `KeyPath`, `Origin`/`Meta` provenance, `ConfigError`, `LoadReport`/`LoadWarning`, `LoadLimits`, the built-in source markers, pipeline providers (`LoadLayered`, `CollectInOrder`, ...), `config_check!` |
 | [`cgp-config-value`](crates/cgp-config-value) | `ConfigValue` (`Arc` nodes with `Meta`), merge policies (`DeepMerge`, `ShallowReplace`, `AppendArrays`, `JoinBaseWins`, `AdjoinArrays`, `MergeArraysByKey`), the provenance-aware serde deserializer, `PrepareFileLayer`, `CoreConfigPreset` with its `DefaultPreparers` table |
+| [`cgp-config-formats`](crates/cgp-config-formats) | `#![no_std]` TOML and JSON parsers with spans and duplicate-key rejection, redacting renderers, `EnabledFormats` |
+| [`cgp-config-providers`](crates/cgp-config-providers) | `Bootstrap`, file search, file/env/`.env`/CLI sources, `TwelveFactorPreset` and its variants, `StdLoader`/`MemoryLoader`, garde/validator adapters |
+| [`cgp-config-derive`](crates/cgp-config-derive) | `#[derive(ConfigSection)]` (implementation in `cgp-config-derive-impl`) |
+| `fuzz` | cargo-fuzz targets (not in the workspace) |
 | `xtask` | `cargo xtask ci` and friends (not published) |
 
 The load pipeline is **collect** (for each source: load → prepare → merge onto the
@@ -28,6 +33,22 @@ accumulator) → **interpolate** (off by default) → **deserialize** → **reso
 **validate**. Each arrow is a component.
 
 ## Quick look
+
+With the derive and a preset (see the facade docs for the full example):
+
+```rust,ignore
+#[derive(serde::Deserialize, ConfigSection)]
+struct AppConfig {
+    #[config(default = 8080, env_raw = "PORT")]
+    port: u16,
+    #[config(default = "30s", parse = "duration")]
+    timeout: std::time::Duration,
+}
+
+let config: AppConfig = cgp_config::from_toml_str("port = 9090")?;
+```
+
+By hand, with only the core crates:
 
 ```rust
 use cgp_config::prelude::*;
