@@ -28,6 +28,9 @@ pub enum Origin {
         /// The variable name.
         key: Arc<str>,
     },
+    /// One variable of a `.env` file (the `dotenv` feature), by file and name. Shared
+    /// behind one `Arc` to keep `Origin` (and so every error) small.
+    DotEnv(Arc<DotEnvSource>),
     /// A command-line override the application already parsed.
     Cli {
         /// The argument or override key, such as `--http.port`.
@@ -50,6 +53,16 @@ pub enum Origin {
     },
 }
 
+/// The file and variable of an [`Origin::DotEnv`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub struct DotEnvSource {
+    /// The `.env` file.
+    pub path: Arc<str>,
+    /// The variable name.
+    pub key: Arc<str>,
+}
+
 impl Origin {
     /// A file origin.
     #[must_use]
@@ -67,6 +80,15 @@ impl Origin {
     #[must_use]
     pub fn env_document(key: impl Into<Arc<str>>) -> Self {
         Self::EnvDocument { key: key.into() }
+    }
+
+    /// A `.env` variable origin.
+    #[must_use]
+    pub fn dotenv(path: impl Into<Arc<str>>, key: impl Into<Arc<str>>) -> Self {
+        Self::DotEnv(Arc::new(DotEnvSource {
+            path: path.into(),
+            key: key.into(),
+        }))
     }
 
     /// A command-line origin.
@@ -102,7 +124,7 @@ impl Origin {
     }
 
     /// Short kind name, stable for tracing fields: `unknown`, `defaults`, `file`, `env`,
-    /// `env-document`, `cli`, `embedded`, `memory`, `custom`.
+    /// `env-document`, `dotenv`, `cli`, `embedded`, `memory`, `custom`.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
@@ -111,6 +133,7 @@ impl Origin {
             Self::File { .. } => "file",
             Self::Env { .. } => "env",
             Self::EnvDocument { .. } => "env-document",
+            Self::DotEnv(_) => "dotenv",
             Self::Cli { .. } => "cli",
             Self::Embedded { .. } => "embedded",
             Self::Memory { .. } => "memory",
@@ -127,6 +150,7 @@ impl fmt::Display for Origin {
             Self::File { path } => f.write_str(path),
             Self::Env { key } => write!(f, "env {key}"),
             Self::EnvDocument { key } => write!(f, "env document {key}"),
+            Self::DotEnv(source) => write!(f, "{} {}", source.path, source.key),
             Self::Cli { arg } => write!(f, "cli {arg}"),
             Self::Embedded { name } => write!(f, "embedded {name}"),
             Self::Memory { name } => write!(f, "memory {name}"),
@@ -223,6 +247,7 @@ mod tests {
                 "env document APP_DOCUMENT",
                 "env-document",
             ),
+            (Origin::dotenv(".env", "APP__X"), ".env APP__X", "dotenv"),
             (Origin::cli("--http.port"), "cli --http.port", "cli"),
             (
                 Origin::embedded("defaults.toml"),

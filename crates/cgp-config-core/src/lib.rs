@@ -43,10 +43,17 @@ mod limits;
 mod macros;
 pub mod markers;
 pub mod providers;
+mod root_meta;
+mod section;
 mod static_path;
+pub mod units;
 
 #[cfg(feature = "alloc")]
+mod env;
+#[cfg(feature = "alloc")]
 mod error;
+#[cfg(feature = "alloc")]
+mod log;
 #[cfg(feature = "alloc")]
 mod meta;
 #[cfg(feature = "alloc")]
@@ -57,23 +64,42 @@ mod path;
 mod report;
 #[cfg(feature = "alloc")]
 mod suggest;
+#[cfg(feature = "alloc")]
+mod validation;
 
 pub use components::*;
+#[cfg(feature = "alloc")]
+pub use env::{EnvSnapshot, HasEnvPrefix, HasEnvSnapshot};
 #[cfg(feature = "alloc")]
 pub use error::{ConfigError, RedactedRef, UnknownKey, ValidationErrors, ValidationIssue, codes};
 pub use limits::LoadLimits;
 #[cfg(feature = "alloc")]
+pub use log::{LayerSkipped, NoopLogger, SourceLoaded};
+#[cfg(feature = "alloc")]
 pub use meta::{Meta, Provenance};
 #[cfg(feature = "alloc")]
-pub use origin::{Origin, Span};
+pub use origin::{DotEnvSource, Origin, Span};
 #[cfg(feature = "alloc")]
 pub use path::{KeyPath, KeyPathParseError, PathSegment};
 pub use providers::*;
 #[cfg(feature = "alloc")]
 pub use report::{LoadReport, LoadWarning};
+pub use root_meta::{
+    ConfigMetaField, HasRootConfigMeta, NoConfigMeta, RootConfigMetaComponent,
+    RootConfigMetaGetter, UseConfigMeta,
+};
+pub use section::{
+    ConfigMeta, ConfigSection, ConstDefault, FieldChain, FieldMerge, FieldMeta,
+    FinalizeOptionalAll, MissingFields, NestedMeta, NestedShape, ParseKind, ReloadPolicy,
+};
 pub use static_path::StaticKeyPath;
 #[cfg(feature = "alloc")]
 pub use suggest::{edit_distance, suggest};
+#[cfg(feature = "alloc")]
+pub use validation::{
+    AggregateError, AllOf, Nested, ValidateFn, ValidateSections, ValidationRule, ValidatorList,
+    accumulate, nested,
+};
 
 /// Reserved document keys. A user field cannot take these names.
 pub mod reserved {
