@@ -29,7 +29,15 @@ const VALUE_COVERAGE: &str = "95";
 /// The `cgp-fork` repository; `fork-main` builds against its default branch.
 const CGP_FORK_GIT: &str = "https://github.com/Just-Replicant/cgp-fork";
 /// The published crates checked by `semver`.
-const PUBLISHED: &[&str] = &["cgp-config", "cgp-config-core", "cgp-config-value"];
+const PUBLISHED: &[&str] = &[
+    "cgp-config",
+    "cgp-config-core",
+    "cgp-config-value",
+    "cgp-config-formats",
+    "cgp-config-providers",
+    "cgp-config-derive",
+    "cgp-config-derive-impl",
+];
 
 type Step = fn() -> Result<(), String>;
 
@@ -221,7 +229,22 @@ fn hack() -> Result<(), String> {
             "cgp-config-core",
             "-p",
             "cgp-config-value",
+            "-p",
+            "cgp-config-formats",
             "--feature-powerset",
+            "--no-dev-deps",
+        ],
+    )?;
+    // The std crate has more features than a powerset can afford; each one alone is the
+    // useful check (default features must not need dotenv or clap).
+    cargo(
+        None,
+        &[
+            "hack",
+            "check",
+            "-p",
+            "cgp-config-providers",
+            "--each-feature",
             "--no-dev-deps",
         ],
     )
@@ -240,6 +263,15 @@ fn nostd() -> Result<(), String> {
             "alloc",
         ][..],
         &["build", "-p", "cgp-config-value", "--no-default-features"][..],
+        &["build", "-p", "cgp-config-formats", "--no-default-features"][..],
+        &[
+            "build",
+            "-p",
+            "cgp-config-formats",
+            "--no-default-features",
+            "--features",
+            "toml,json",
+        ][..],
         &["build", "-p", "cgp-config", "--no-default-features"][..],
         &[
             "build",
@@ -302,6 +334,8 @@ fn miri() -> Result<(), String> {
             "cgp-config-value",
             "-p",
             "cgp-config-core",
+            "-p",
+            "cgp-config-formats",
             "--all-features",
         ],
     )

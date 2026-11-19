@@ -4,10 +4,14 @@ members = [
     "crates/cgp-config",
     "crates/cgp-config-core",
     "crates/cgp-config-value",
+    "crates/cgp-config-formats",
+    "crates/cgp-config-providers",
+    "crates/cgp-config-derive",
+    "crates/cgp-config-derive-impl",
     "xtask",
 ]
-# Crates from later phases (providers, formats, secrets, derive, watch, schema, test)
-# are added to `members` when their phase starts. See docs/design-plan.md §5 and §18.
+# Crates from later phases (secrets, watch, schema, test) are added to `members` when
+# their phase starts. See docs/design-plan.md §5 and §18.
 
 [workspace.package]
 version      = "0.1.0-alpha.1"
@@ -25,6 +29,10 @@ categories   = ["config", "no-std"]
 cgp-config       = { version = "=0.1.0-alpha.1", path = "crates/cgp-config", default-features = false }
 cgp-config-core  = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-core", default-features = false }
 cgp-config-value = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-value", default-features = false }
+cgp-config-formats     = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-formats", default-features = false }
+cgp-config-providers   = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-providers", default-features = false }
+cgp-config-derive      = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-derive" }
+cgp-config-derive-impl = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-derive-impl" }
 
 # The CGP fork. `compat-0.10` is in the fork's default set, so defaults stay off.
 # `cgp-config-core` asks for no extra feature; crates that need `alloc` add it.
@@ -36,10 +44,23 @@ indexmap   = { version = "2", default-features = false }
 serde      = { version = "1", default-features = false, features = ["alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 spin       = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
+toml       = { version = "1.2", default-features = false, features = ["parse", "serde", "display"] }
+
+# Std-only (sources, feature-gated integrations, the derive).
+clap        = { version = "4.6", default-features = false, features = ["std"] }
+directories = { version = "6" }
+garde       = { version = "0.23", default-features = false }
+proc-macro2 = { version = "1" }
+quote       = { version = "1" }
+syn         = { version = "3", default-features = false, features = ["full", "parsing", "printing", "proc-macro", "derive", "clone-impls", "extra-traits"] }
+validator   = { version = "0.21", default-features = false }
+zeroize     = { version = "1.9", default-features = false, features = ["alloc"] }
 
 # Dev-only.
 anyhow   = { version = "1" }
 proptest = { version = "1" }
+tempfile = { version = "3" }
+trybuild = { version = "1" }
 
 # A curated subset of `clippy::pedantic` (the same set cgp-fork enforces),
 # denied in CI through `-D warnings`.
