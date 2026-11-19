@@ -1,0 +1,64 @@
+# cargo-fuzz targets (nightly): `cargo +nightly fuzz run <target>` from this directory.
+# Kept out of the workspace so stable builds never see libfuzzer.
+[package]
+name = "cgp-config-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cgp-config-core = { path = "../crates/cgp-config-core", features = ["std"] }
+cgp-config-value = { path = "../crates/cgp-config-value", features = ["std", "interpolate"] }
+cgp-config-formats = { path = "../crates/cgp-config-formats", features = ["std", "toml", "json"] }
+cgp-config-providers = { path = "../crates/cgp-config-providers", features = ["toml", "json", "dotenv"] }
+cgp-config-derive-impl = { path = "../crates/cgp-config-derive-impl" }
+proc-macro2 = "1"
+
+[[bin]]
+name = "toml_parse"
+path = "fuzz_targets/toml_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_parse"
+path = "fuzz_targets/json_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "interpolation_lexer"
+path = "fuzz_targets/interpolation_lexer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "env_layer"
+path = "fuzz_targets/env_layer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dotenv_parse"
+path = "fuzz_targets/dotenv_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "derive_input"
+path = "fuzz_targets/derive_input.rs"
+test = false
+doc = false
+bench = false
