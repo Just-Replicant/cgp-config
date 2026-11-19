@@ -4,12 +4,14 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use cgp_config_core::{
-    CanReportWarning, ConfigError, HasActiveProfile, HasConfigValueType, HasLoadLimits, KeyPath,
-    LayerPreparer, LayerPreparerComponent, LoadLimits, LoadWarning, reserved,
+    CanReportWarning, ConfigError, ConfigMeta, HasActiveProfile, HasConfigValueType, HasLoadLimits,
+    HasRootConfigMeta, KeyPath, LayerPreparer, LayerPreparerComponent, LoadLimits, LoadWarning,
+    reserved,
 };
 use cgp_fork::prelude::*;
 
 use crate::merge::{MergeOptions, merge};
+use crate::schema::canonicalize;
 use crate::{ConfigValue, Kind};
 
 /// Prepares a layer read from a document (a config, profile, local, `conf.d`, or embedded
@@ -43,6 +45,7 @@ where
     Self: HasConfigValueType<ConfigValue = ConfigValue>
         + CanRaiseError<ConfigError>
         + HasActiveProfile
+        + HasRootConfigMeta
         + CanReportWarning
         + HasLoadLimits,
 {
@@ -52,9 +55,13 @@ where
         layer: Self::ConfigValue,
     ) -> Result<Self::ConfigValue, Self::Error> {
         let limits = self.load_limits();
-        prepare_file_layer(layer, self.active_profile(), &limits, &mut |warning| {
-            self.report_warning(warning);
-        })
+        prepare_file_layer(
+            layer,
+            self.active_profile(),
+            self.root_config_meta(),
+            &limits,
+            &mut |warning| self.report_warning(warning),
+        )
         .map_err(Self::raise_error)
     }
 }
@@ -63,6 +70,7 @@ where
 fn prepare_file_layer(
     layer: ConfigValue,
     active_profile: &str,
+    schema: Option<&'static ConfigMeta>,
     limits: &LoadLimits,
     report: &mut dyn FnMut(LoadWarning),
 ) -> Result<ConfigValue, ConfigError> {
@@ -70,9 +78,15 @@ fn prepare_file_layer(
         return Ok(layer);
     };
     let origin = layer.meta().origin.clone();
+    // Aliases and flattened keys become current names per document (and per profile
+    // table), before any merge.
+    let canonical = |value: ConfigValue, report: &mut dyn FnMut(LoadWarning)| match schema {
+        Some(schema) => canonicalize(value, schema, report),
+        None => Ok(value),
+    };
     if !reserved::ALL.iter().any(|key| map.contains_key(key)) {
         report(LoadWarning::AssumedVersion { origin });
-        return Ok(layer);
+        return canonical(layer, report);
     }
 
     let mut layer = layer;
@@ -94,6 +108,7 @@ fn prepare_file_layer(
     if include.is_some() {
         report(LoadWarning::IgnoredInclude { origin });
     }
+    let mut layer = canonical(layer, report)?;
     let Some(profiles) = profiles else {
         return Ok(layer);
     };
@@ -121,7 +136,7 @@ fn prepare_file_layer(
                 table,
             ));
         }
-        let mut overlay = table.clone();
+        let mut overlay = canonical(table.clone(), report)?;
         mark_profile(&mut overlay, &Arc::from(name));
         layer = merge(layer, overlay, &options)?;
     }
@@ -182,7 +197,7 @@ mod tests {
         Vec<LoadWarning>,
     ) {
         let mut warnings = Vec::new();
-        let result = prepare_file_layer(layer, profile, &LoadLimits::DEFAULT, &mut |w| {
+        let result = prepare_file_layer(layer, profile, None, &LoadLimits::DEFAULT, &mut |w| {
             warnings.push(w);
         });
         (result, warnings)

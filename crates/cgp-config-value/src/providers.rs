@@ -6,8 +6,8 @@ use alloc::vec::Vec;
 use cgp_config_core::cgp::core::field::traits::StaticString;
 use cgp_config_core::{
     CanReportWarning, ConfigDeserializer, ConfigDeserializerComponent, ConfigError,
-    EmptyConfigValue, EmptyConfigValueComponent, HasConfigValueType, HasLoadLimits, LayerMerger,
-    LayerMergerComponent, LoadWarning,
+    EmptyConfigValue, EmptyConfigValueComponent, HasConfigValueType, HasLoadLimits,
+    HasRootConfigMeta, LayerMerger, LayerMergerComponent, LoadWarning,
 };
 use cgp_fork::prelude::*;
 use serde::de::DeserializeOwned;
@@ -15,6 +15,7 @@ use serde::de::DeserializeOwned;
 use crate::ConfigValue;
 use crate::de::{UnknownKey, from_value_with_limits};
 use crate::merge::{ArrayMerge, MergeDepth, MergeOptions, Precedence, merge};
+use crate::schema::{merge_with_schema, normalize, split_denied};
 
 /// The empty map, as the start of the layer fold. The preset provider.
 pub struct EmptyMap;
@@ -100,6 +101,35 @@ merge_provider! {
         .with_arrays(ArrayMerge::Append)
 }
 
+/// Like [`DeepMerge`], but each field's `#[config(merge = "replace" | "append" | "deep")]`
+/// policy (from the context's root schema, `HasRootConfigMeta`) applies at that field.
+/// Without a root schema it is [`DeepMerge`].
+pub struct KeyedMerge;
+
+#[cgp_impl(KeyedMerge)]
+impl LayerMerger
+where
+    Self: HasConfigValueType<ConfigValue = ConfigValue>
+        + CanRaiseError<ConfigError>
+        + HasLoadLimits
+        + HasRootConfigMeta,
+{
+    fn merge_layers(
+        &self,
+        base: Self::ConfigValue,
+        overlay: Self::ConfigValue,
+    ) -> Result<Self::ConfigValue, Self::Error> {
+        let Some(meta) = self.root_config_meta() else {
+            return merge_checked(self, base, overlay, MergeOptions::DEEP);
+        };
+        let limits = self.load_limits();
+        let options = MergeOptions::DEEP.with_limits(&limits);
+        let merged = merge_with_schema(base, overlay, meta, &options).map_err(Self::raise_error)?;
+        merged.check_limits(&limits).map_err(Self::raise_error)?;
+        Ok(merged)
+    }
+}
+
 /// Figment's name for [`AppendArrays`].
 pub type Admerge = AppendArrays;
 
@@ -181,6 +211,13 @@ impl<Context> UnknownKeyPolicy<Context> for IgnoreUnknownKeys {
 /// (see [`crate::de`]) and applies the unknown-key `Policy`. The preset provider is
 /// `SerdeWithProvenance<WarnUnknownKeys>`.
 ///
+/// When the context names a root schema (`HasRootConfigMeta`, wired by
+/// `UseConfigMeta<AppConfig>`), the tree is first normalized against it (see
+/// [`crate::schema`]: flatten, aliases, mounts, durations, byte sizes, secrets, and every
+/// missing required field at once), and unknown keys inside a `deny_unknown` section fail
+/// the load whatever `Policy` says. With `NoConfigMeta` (the preset default) the tree goes
+/// to serde as it is.
+///
 /// Sequences written as JSON text (env and CLI arrays) are parsed under the context's
 /// [`HasLoadLimits`], so they cannot exceed `max_depth` or `max_keys`.
 pub struct SerdeWithProvenance<Policy>(PhantomData<Policy>);
@@ -188,14 +225,33 @@ pub struct SerdeWithProvenance<Policy>(PhantomData<Policy>);
 #[cgp_impl(SerdeWithProvenance<Policy>)]
 impl<Policy, Config> ConfigDeserializer<Config>
 where
-    Self:
-        HasConfigValueType<ConfigValue = ConfigValue> + CanRaiseError<ConfigError> + HasLoadLimits,
+    Self: HasConfigValueType<ConfigValue = ConfigValue>
+        + CanRaiseError<ConfigError>
+        + HasLoadLimits
+        + HasRootConfigMeta
+        + CanReportWarning,
     Config: DeserializeOwned,
     Policy: UnknownKeyPolicy<Self>,
 {
     fn deserialize_config(&self, value: Self::ConfigValue) -> Result<Config, Self::Error> {
+        let meta = self.root_config_meta();
+        let value = match meta {
+            Some(meta) => normalize(value, meta, &mut |warning| self.report_warning(warning))
+                .map_err(Self::raise_error)?,
+            None => value,
+        };
         let (config, unknown) =
             from_value_with_limits(&value, &self.load_limits()).map_err(Self::raise_error)?;
+        let unknown = match meta {
+            Some(meta) => {
+                let (denied, rest) = split_denied(meta, unknown);
+                if let Some(error) = ConfigError::unknown_keys(denied) {
+                    return Err(Self::raise_error(error));
+                }
+                rest
+            }
+            None => unknown,
+        };
         Policy::handle(self, unknown).map_err(Self::raise_error)?;
         Ok(config)
     }

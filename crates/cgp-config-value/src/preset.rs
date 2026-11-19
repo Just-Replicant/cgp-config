@@ -9,6 +9,7 @@
 //! | `LayerMergerComponent` | [`DeepMerge`] |
 //! | `LayerCollectorComponent` | `CollectInOrder` |
 //! | `LayerPreparerComponent` | `UseDelegate<`[`DefaultPreparers`]`>` (file markers → [`PrepareFileLayer`], others → `IdentityLayer`) |
+//! | `RootConfigMetaComponent` | `NoConfigMeta` (no schema; a context names its type with `UseConfigMeta<AppConfig>`) |
 //! | `InterpolatorComponent` | `NoInterpolation` (interpolation off) |
 //! | `ConfigDeserializerComponent` | [`SerdeWithProvenance<WarnUnknownKeys>`](crate::SerdeWithProvenance) (unknown keys warn) |
 //! | `ConfigValidatorComponent` | `NoValidation` |
@@ -52,7 +53,8 @@ pub mod __entries {
         ConfigValueTypeProviderComponent, DefaultLoadLimits, DenySecrets,
         EmptyConfigValueComponent, InterpolatorComponent, LayerCollectorComponent,
         LayerMergerComponent, LayerPreparerComponent, LoadLimitsComponent, LoadReportComponent,
-        NoInterpolation, NoValidation, ReportOnLoader, SecretsResolverComponent,
+        NoConfigMeta, NoInterpolation, NoValidation, ReportOnLoader, RootConfigMetaComponent,
+        SecretsResolverComponent,
     };
     pub use cgp_fork::prelude::{UseDelegate, UseType};
 
@@ -71,9 +73,11 @@ use cgp_fork::prelude::*;
 use self::__entries::*;
 use crate::PrepareFileLayer;
 
-/// The preparer of every built-in source marker: documents (config, `conf.d`, profile,
-/// local, embedded files) go through [`PrepareFileLayer`], everything else through
-/// `IdentityLayer`. `CoreConfigPreset` wires it as
+/// The preparer of every built-in source marker: documents (config, profile, local,
+/// embedded files) go through [`PrepareFileLayer`], everything else through
+/// `IdentityLayer`. `ConfigDir` is `IdentityLayer` because its loader prepares each
+/// `conf.d` file on its own (as a `ConfigFile`) before merging them, so `$profiles` and
+/// `$version` apply per file. `CoreConfigPreset` wires it as
 /// `LayerPreparerComponent: UseDelegate<DefaultPreparers>`.
 pub struct DefaultPreparers;
 
@@ -84,13 +88,13 @@ delegate_components! {
     DefaultPreparers {
         [
             ConfigFile,
-            ConfigDir,
             ProfileFile,
             LocalFile,
             Embedded,
         ]: PrepareFileLayer,
         [
             Defaults,
+            ConfigDir,
             EnvVars,
             EnvDocument,
             DotEnv,
@@ -115,5 +119,6 @@ cgp_preset! {
         SecretsResolverComponent: DenySecrets,
         LoadLimitsComponent: DefaultLoadLimits,
         LoadReportComponent: ReportOnLoader,
+        RootConfigMetaComponent: NoConfigMeta,
     }
 }

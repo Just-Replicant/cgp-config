@@ -4,7 +4,7 @@
 #![allow(clippy::std_instead_of_core, clippy::std_instead_of_alloc)]
 
 use cgp_config_core::components::*;
-use cgp_config_core::{ConfigError, DefaultLoadLimits, IgnoreWarnings};
+use cgp_config_core::{ConfigError, DefaultLoadLimits, IgnoreWarnings, NoConfigMeta};
 use cgp_config_value::{
     AdjoinArrays, Admerge, AppendArrays, ConfigValue, DeepMerge, IgnoreUnknownKeys, JoinBaseWins,
     MergeArraysByKey, SerdeWithProvenance, ShallowReplace,
@@ -25,6 +25,7 @@ macro_rules! merger_context {
                 ConfigValueTypeProviderComponent: UseType<ConfigValue>,
                 LoadLimitsComponent: DefaultLoadLimits,
                 LoadReportComponent: IgnoreWarnings,
+                RootConfigMetaComponent: NoConfigMeta,
                 LayerMergerComponent: $merger,
                 ConfigDeserializerComponent: SerdeWithProvenance<IgnoreUnknownKeys>,
             }
