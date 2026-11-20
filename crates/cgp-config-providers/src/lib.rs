@@ -10,6 +10,7 @@ pub mod cli;
 pub mod dotenv;
 pub mod env;
 pub mod file;
+pub mod layers;
 pub mod loader;
 pub mod location;
 pub mod presets;
