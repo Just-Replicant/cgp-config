@@ -53,6 +53,64 @@ All notable changes to this project are documented here. The format follows
 - The facade re-exports all of the above behind matching features (default:
   `std`, `derive`, `toml`); `xtask` checks, documents, and semver-checks the new crates.
 
+### Review hardening (`fix/review-hardening`)
+
+See ADR-002 items 3, 7, and 10–20.
+
+#### Added
+
+- `cgp_config_providers::layers`: named layer lists (`TwelveFactorLayers`,
+  `TwelveFactorLocalLayers`, `TwelveFactorConfDirLayers`, `TwelveFactorCliLayers`,
+  `TwelveFactorDotenvLayers`, `TwelveFactorDotenvCliLayers`,
+  `TwelveFactorDocumentLayers`, `TestLayers`) and the `LayerList` trait;
+  `Bootstrap::layers::<L>()`, `Bootstrap::accepts_cli_overrides`,
+  `StdLoader::with_layers`, `StdLoader::with_section`, `StdLoader::load_with`.
+- `StrictPreset` (`DenyUnknownKeys` + `RequireActiveProfile`, design plan §6.15) and the
+  `RequireActiveProfile` source loader.
+- `from_toml_str_with` / `from_json_str_with` (secret resolver, `Loaded { config,
+  warnings }`); unknown keys in `deny_unknown` sections are aggregated with missing
+  fields.
+- Clap: `--env-prefix` is read, `config_command()` adds `template`, `schema`, `explain`,
+  and `check` subcommands (`ConfigCommand`).
+- Compile-time key checks for derived sections (`ConfigMeta::checked`): clashes between
+  fields, aliases, flattened children, and folded env names fail the build.
+- `cgp_config_core::env_fold` (`snake_case` folding for env segments).
+- `CanReportWarning::report_profile_table` / `profile_table_reported`.
+- `Meta::index_patch` and `merge_keeping_patches` (array element patches).
+
+#### Changed
+
+- **Breaking:** `StdLoader::new` / `for_section` return `Result` and refuse bootstrap
+  inputs the layer list would drop (`--set` without `CliArgs`, `{PREFIX}_DOCUMENT`
+  without `EnvDocument`, an explicit `.env` path without `DotEnv`); `StdLoader` carries
+  `env_document`, `dotenv_path`, and `cli_overrides`. `Bootstrap::from_args` rejects
+  `--set` unless `CliArgs` is declared. With `DotEnv` and no explicit path, `./.env` is
+  the default.
+- **Breaking:** `ConfigError::DuplicateKey` carries the first occurrence; TOML and JSON
+  report both spans.
+- **Breaking:** `TestConfigPreset` (version 2) extends `CoreConfigPreset` with
+  `TestSources`, `LoadLayered<TestLayers>`, and `NoopLogger`.
+- A directory search that finds nothing makes the file layer absent unless
+  `require_file(true)`.
+- Env segments fold to `snake_case`; `LossyUnderscore` is documented as unavailable.
+- `{PREFIX}_DOCUMENT` is canonicalized against the root schema like the other layers.
+- `$CONFIGURATION_DIRECTORY` is split on `:` on Unix only.
+- `capture_env` fails on non-UTF-8 values only for variables cgp-config reads.
+- `conf.d` follows symlinks that resolve to a file inside the directory.
+- Torn reads are detected by length only.
+- The secret-reference heuristic for the permission warning covers every reference
+  scheme (`SECRET_SCHEMES`, `secret://`).
+
+#### Fixed
+
+- `${ref:…}` could copy a `#[config(secret)]` field into a plain field; the interpolator
+  now checks the schema.
+- `--set servers[1].host=x` replaced the whole `servers` array; it now patches element 1.
+- `LoadProfileFile` read and parsed the main file a second time.
+- A key set both on a parent and under a flattened field, or claimed by two flattened
+  sections, was silently merged.
+- `StdLoader` silently dropped `{PREFIX}_DOCUMENT`, the `.env` path, and `--set`.
+
 ### Added (P0, P1)
 
 - Workspace scaffolding (P0): edition 2024, MSRV 1.99, toolchain 1.99.1, workspace lints,

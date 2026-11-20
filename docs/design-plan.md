@@ -151,9 +151,9 @@ Own the value tree. Figment and config-rs bridges are migration aids after 0.1, 
 ### Goals
 
 * G1 Typed, `serde`-based config for apps and libraries. Every source and behavior is swappable per context.
-* G2 Layered sources with the precedence in §0. Profiles from bootstrap data plus `$profiles` and `config.{profile}.toml`.
+* G2 Layered sources with the precedence in §0. Profiles from bootstrap data plus `$profiles` and `{stem}.{profile}.{ext}` (e.g. `app.production.toml`).
 * G3 Formats behind features. **0.1 ships TOML and JSON.** JSON5, RON, INI, and YAML are later features on the same `CanParseFormat` trait. Adding a format does not change app wiring.
-* G4 Sources. **0.1:** defaults, an embedded document (`include_str!`), one file, search paths (cwd, executable directory, `CONFIGURATION_DIRECTORY`, platform dirs), `conf.d`, optional `config.local.toml`, env, one optional JSON document env var, optional dotenv, optional clap, in-memory. **0.2:** root `$include`. **0.3+:** remote KV, cloud secret stores, and an optional decrypt wrapper, as satellite crates.
+* G4 Sources. **0.1:** defaults, an embedded document (`include_str!`), one file, search paths (cwd, executable directory, `CONFIGURATION_DIRECTORY`, platform dirs), `conf.d`, optional `{stem}.local.{ext}`, env, one optional JSON document env var, optional dotenv, optional clap, in-memory. **0.2:** root `$include`. **0.3+:** remote KV, cloud secret stores, and an optional decrypt wrapper, as satellite crates.
 * G5 Interpolation of `${VAR}`, `${VAR:-default}`, `${VAR:?message}`, and `${ref:other.key}` on fields that opt in. Escape is `$$`. Cycles and depth are errors. Expanded nodes are not scanned again.
 * G6 Validation: per-type, cross-field, nested sections, all errors at once.
 * G7 Secrets: `Secret<T>` after deserialize, redacted `Debug` / logs / errors / dumps / diffs, eager by default, `LazySecret<T>` opt-in, zeroize on drop of the last `Arc`.
@@ -314,7 +314,7 @@ The prefix is `APP`, not `APP_`. Nested keys are `{PREFIX}__{PATH}` with the `__
 
 Precedence for these three settings is CLI, then env, then built-in. The profile name is never read from the config file.
 
-The env read builds a `EnvSnapshot` (`BTreeMap<String, String>`). Non-UTF-8 values are `ConfigError::EnvEncoding` with the key name and without the bytes. After bootstrap, every provider reads `HasEnvSnapshot`. Nothing reads `std::env` again, and nothing writes it.
+The env read builds a `EnvSnapshot` (`BTreeMap<String, String>`). A non-UTF-8 value is `ConfigError::EnvEncoding` with the key name and without the bytes when the variable is one cgp-config reads (`{PREFIX}__…`, `{PREFIX}_CONFIG`, `{PREFIX}_PROFILE`, `{PREFIX}_DOCUMENT`, `CONFIGURATION_DIRECTORY`); other non-UTF-8 variables are skipped. `--set` is accepted only when the loader's layer list has `CliArgs`, and the loader refuses a `{PREFIX}_DOCUMENT` or an explicit `.env` path its layer list would ignore (ADR-002 §14). After bootstrap, every provider reads `HasEnvSnapshot`. Nothing reads `std::env` again, and nothing writes it.
 
 `quick::load` uses this bootstrap and then `TwelveFactorPreset` (§13).
 
@@ -343,7 +343,7 @@ pub trait CanLoadSource<Source>: HasConfigValueType + HasErrorType {
 | Required file missing | `Err(ConfigError::Missing)` |
 | File present, empty TOML `""` or JSON `null`/`{}` as an empty document | `Ok(Some(empty map))` |
 | Permission, IO, or parse error | `Err` |
-| Directory search finds nothing and no explicit path was set | `Err(ConfigError::Missing)` listing the paths |
+| Directory search finds nothing and no explicit path was set | `Ok(None)` (the layer is absent). With `require_file(true)`: `Err(ConfigError::Missing)` listing the paths |
 
 An explicit `config_path` is required. Search-path candidates are optional until one is found. `conf.d` is a different marker and merges every file.
 
@@ -354,26 +354,26 @@ An explicit `config_path` is required. Search-path candidates are optional until
 | `Defaults` | `LoadDerivedDefaults<T>` from `ConfigMeta` (const default expressions). No `Serialize` bound | target type's generated meta |
 | `ConfigFile` | `LoadFile<Fmt>` or `LoadFileAuto` | `HasConfigPath`, `HasFileRequired`, `CanReadConfigFile` |
 | `ConfigDir` | `LoadConfDir<Fmt>` — every `conf.d/*.{ext}` in lexicographic UTF-8 order, each prepared and merged | `HasConfigSearchPaths`, `HasAppName` |
-| `ProfileFile` | `LoadProfileFile<Fmt>` — `config.{profile}.toml`, optional when absent | `HasActiveProfile`, `HasConfigPath` (directory of the base file) |
+| `ProfileFile` | `LoadProfileFile` — `{stem}.{profile}.{ext}` beside the main file (`app.toml` → `app.production.toml`), optional when absent. `RequireActiveProfile` errors when neither it nor `$profiles.{name}` exists | `HasActiveProfile`, `HasConfigPath` (directory of the base file) |
 | `EnvVars` | `LoadEnvVars` | `HasEnvPrefix`, `HasEnvSeparator` (default `"__"`), `HasEnvSnapshot`, `HasEnvKeyStyle` |
 | `DotEnv` | `LoadDotenv` — parses a file into a layer. Feature `dotenv` | `HasDotenvPath` |
 | `CliArgs` | `LoadClapMatches` reads `HasCliOverrides`. Feature `clap` | the app's already-parsed matches, projected into a map |
 | `InMemory` | `LoadFromField<Tag>` | `HasField<Tag, Value = ConfigValue>` |
 | `Embedded` | `LoadEmbedded<Fmt>` parses `include_str!` text. Optional; not in `TwelveFactorPreset` | `HasEmbeddedDocument` (`&'static str`) |
-| `LocalFile` | `LoadLocalFile<Fmt>` — `{stem}.local.toml` next to the base file, optional when absent | `HasConfigPath` |
+| `LocalFile` | `LoadLocalFile<Fmt>` — `{stem}.local.{ext}` next to the base file, optional when absent | `HasConfigPath` |
 | `EnvDocument` | `LoadEnvDocument` — `{PREFIX}_DOCUMENT` (`APP_DOCUMENT`) is one JSON object, optional when unset. Feature `json` | `HasEnvPrefix`, `HasEnvSnapshot` |
 | `DynSources` | `LoadDynSources` | `HasDynSources` |
 
 `CanReadConfigFile` is the IO seam. `ReadStdFile` uses `std::fs`. `ReadFromMap` serves tests and never touches the disk. The reader enforces `LoadLimits::max_bytes` and returns `Ok(None)` on `NotFound`. `LoadFile` turns that `None` into `Missing` when the file is required. UTF-8 is required. A leading UTF-8 BOM is stripped. UTF-16 is `ConfigError::Encoding`.
 
-The raw text is a `zeroize::Zeroizing<String>` until parse returns. On Unix the reader records `LoadWarning::WorldWritable` when the file is group-writable or world-writable. It records `LoadWarning::SecretWorldReadable` when the parsed layer contains a secret reference and the mode allows group or world read. A `0644` file with no secret reference does not warn. The reader retries once when the length changes between `open` and `read` (a torn write). Editor scratch names (`*~`, `*.swp`, `*.tmp`, `.#*`) are not config files; search and `conf.d` skip them.
+The raw text is a `zeroize::Zeroizing<String>` until parse returns. On Unix the reader records `LoadWarning::WorldWritable` when the file is group-writable or world-writable. It records `LoadWarning::SecretWorldReadable` when the parsed layer contains a secret reference and the mode allows group or world read. A `0644` file with no secret reference does not warn. The reader retries once when the length changes between `open` and the end of the read, or the bytes read differ from it (a torn write); modification times are not compared. In `conf.d` a symlink is followed only when it resolves to a regular file inside the `conf.d` directory. Editor scratch names (`*~`, `*.swp`, `*.tmp`, `.#*`) are not config files; search and `conf.d` skip them.
 
 `LoadFileAuto` maps the extension through a `match` on the enabled format features.
 
 Search order used by bootstrap and by `quick::load`, via `directories::ProjectDirs` (on Windows this is the known-folder config dir, not XDG):
 
 1. Explicit `--config` / `{PREFIX}_CONFIG` (`APP_CONFIG`) if set (required file). That variable is a **path**. The JSON blob is `{PREFIX}_DOCUMENT` (`APP_DOCUMENT`) (§6.17).
-2. `{CONFIGURATION_DIRECTORY}/{app}.toml` when systemd set `CONFIGURATION_DIRECTORY`.
+2. `{CONFIGURATION_DIRECTORY}/{app}.toml` when systemd set `CONFIGURATION_DIRECTORY` (on Unix the value is split on `:` and the first directory is used; elsewhere it is one path).
 3. `./{app}.toml`, then `./config.toml`, then `./config/{app}.toml` (current directory).
 4. The same three names in the directory of `std::env::current_exe()` (a service whose cwd is `/`).
 5. `{project_config_dir}/{app}.toml`.
@@ -424,7 +424,7 @@ where
 
 * The layer stores **strings**. Numbers, bools, enums, and lists are parsed later, type-directed, during deserialize (§6.6).
 * Default separator is `__`. The layer accepts only keys that start with `{PREFIX}__`. `APP__HTTP__PORT` with prefix `APP` becomes path `http.port`.
-* A separator of a single `_` is rejected unless the context wires `LossyUnderscore`. That style splits against known `ConfigMeta` paths, prefers the unique matching path, and returns `ConfigError::AmbiguousEnv` when two paths match. `TwelveFactorPreset` does not wire it.
+* A separator of a single `_` is rejected. `LossyUnderscore` (split against known `ConfigMeta` paths, prefer the unique match, `ConfigError::AmbiguousEnv` otherwise) is **not available in 0.1**; it may come later as a new key style. Env segments fold to `snake_case` before matching (`MAX_CONNECTIONS`, `MAXCONNECTIONS`, `maxConnections` all match `max_connections`); a fold that matches two fields is `ConfigError::AmbiguousEnv`.
 * Env keys fold to `snake_case`. File keys stay case-sensitive. If the folded env key matches two file keys that differ only by case, the error is `ConfigError::AmbiguousEnv`.
 * Lists are JSON array text (`[1,2]`, `["a","b"]`) when the target is a sequence. Comma splitting is not used.
 * Bool accepts `true` and `false`, ASCII case-insensitive. Integers and floats use the Rust `FromStr` of the target type. A string that does not parse is a type error naming the path and the target type, without quoting the raw text when the path is secret.
@@ -457,7 +457,7 @@ pub trait CanRenderFormat<Format>: HasConfigValueType + HasErrorType {
 
 Rules for every parser:
 
-* Duplicate keys are errors (`ConfigError::DuplicateKey` with both spans when the parser can report them). JSON uses a reader that rejects duplicates rather than last-wins.
+* Duplicate keys are errors (`ConfigError::DuplicateKey` with both spans, in TOML and JSON: `duplicate key a.b at t.json:1:16 (first at t.json:1:8)`). JSON uses a reader that rejects duplicates rather than last-wins.
 * Depth and key-count come from `HasLoadLimits`.
 * YAML, when that feature exists, disables anchor and alias expansion so a document cannot blow up the process. The backend crate stays inside `cgp-config-formats`.
 * Spans are recorded in `Meta` when the parser exposes them (`toml` spanned / `toml_edit`, JSON byte offsets).
@@ -553,7 +553,7 @@ Every merged node keeps a provenance chain in `Meta`: winning origin and span, t
 Two mechanisms, both applied, with a defined order:
 
 1. **Inside a file,** a reserved table `$profiles`. Sibling keys of `$profiles` are the shared base. `$profiles.default` is deep-merged onto that base, then `$profiles.{active}` is deep-merged on top. `$profiles` is removed before the layer merges, so those keys never reach deserialize.
-2. **Beside a file,** `ProfileFile` loads `config.{profile}.toml` as a later layer. The whole file is the overlay. The same preparer runs, so a profile file may itself contain `$profiles`.
+2. **Beside a file,** `ProfileFile` loads `{stem}.{profile}.{ext}` (same directory and format as the main file: `app.toml` → `app.production.toml`; the name `local` is reserved for `{stem}.local.{ext}`) as a later layer. The whole file is the overlay. The same preparer runs, so a profile file may itself contain `$profiles`.
 
 ```toml
 host = "0.0.0.0"
@@ -569,7 +569,7 @@ Active profile `prod` yields `host = "0.0.0.0"`, `http.port = 80`.
 
 The active profile comes from bootstrap (§6.2): CLI, then `{PREFIX}_PROFILE`, then `"default"`. It is not read from the document.
 
-When the active name has no `$profiles.{name}` table and no profile file, `HasLoadReport` records a warning and the `default` table (if any) is what remains. Wiring `RequireActiveProfile` instead of `ExpandProfiles` turns that situation into `ConfigError::MissingProfile`. The preset uses the warning behavior.
+When the active name has no `$profiles.{name}` table and no profile file, `HasLoadReport` records a warning and the `default` table (if any) is what remains. Wiring `RequireActiveProfile` as the `ProfileFile` source loader turns that situation into `ConfigError::MissingProfile` (`StrictPreset` does). It reads the `$profiles` tables `PrepareFileLayer` recorded on the reporter while preparing the main file, so the main file is read once. The other presets use the warning behavior.
 
 Top-level keys named `prod` or `dev` are ordinary user keys. They are not profiles.
 
@@ -1112,7 +1112,7 @@ cgp_preset! {
 }
 ```
 
-`LocalFile` is optional when `{stem}.local.toml` is absent. It stays out of `TwelveFactorPreset` so a production host does not silently pick up a developer file. Dev and test contexts use `TwelveFactorLocal`.
+`LocalFile` is optional when `{stem}.local.{ext}` is absent. It stays out of `TwelveFactorPreset` so a production host does not silently pick up a developer file. Dev and test contexts use `TwelveFactorLocal`.
 
 ```rust
 cgp_preset! {
@@ -1130,18 +1130,19 @@ cgp_preset! {
 }
 
 cgp_preset! {
-    #[version(1)]
+    #[version(2)]
     TestConfigPreset: CoreConfigPreset {
         override SourceLoaderComponent: UseDelegate<TestSources>, // InMemory + EnvSnapshot
-        override ConfigLoaderComponent: LoadLayered<Product![Defaults, InMemory, EnvVars]>,
-        override SecretResolverComponent: UseDelegate<MockSecretSchemes>,
+        override ConfigLoaderComponent: LoadLayered<TestLayers>,  // Defaults, InMemory, EnvVars
+        LoggerComponent: NoopLogger,
+        // P4: override SecretResolverComponent: UseDelegate<MockSecretSchemes>,
     }
 }
 ```
 
 `EmbeddedPreset` (no_std) wires typed partial builders and a postcard or flash source. It does not wire `ConfigValue`.
 
-`StrictPreset` extends `TwelveFactorPreset` and overrides the deserializer to `SerdeWithProvenance<DenyUnknownKeys>` and the file preparers to `RequireActiveProfile` (a `UseDelegate` table: file markers error when the active profile is missing, and the other markers stay on `IdentityLayer`). Replacing the whole preparer component with a single provider would drop identity preparation for env and CLI. Unknown-key denial is not the default.
+`StrictPreset` extends `TwelveFactorPreset` and overrides the deserializer to `SerdeWithProvenance<DenyUnknownKeys>` and the source loader to `UseDelegate<StrictSources>`, which is `StdSources` with `ProfileFile: RequireActiveProfile` (a missing active profile is an error). A preparer cannot do this: it only sees layers that exist, never the missing profile file. Replacing the whole source loader with a single provider would drop the other markers. Unknown-key denial is not the default.
 
 **Behavior changes ship as new preset types** (`TwelveFactorV2`), not as a bump of `#[version]` on the same type. `#[version]` stays the fork's module `VERSION` and the `override` / `PresetContains` check. Rustdoc on each preset states the layer list, the unknown-key policy, and the interpolation policy.
 
@@ -1172,9 +1173,9 @@ let cfg: AppConfig = cgp_config::from_json_str(json)?;
 let cfg: AppConfig = AppConfig::from_defaults()?;
 ```
 
-`from_toml_str` and `from_json_str` run the same deserialize, secret, and validate stages as the loader, with `DenySecrets` unless the caller passes a resolver, and with an empty env snapshot. `from_defaults` deserializes only `ConfigMeta` const defaults. Doctests use these functions. `LoadEmbedded<Toml>` is the pipeline form of the same text: a source marker in front of `ConfigFile`, fed by `HasEmbeddedDocument`.
+`from_toml_str` and `from_json_str` run the same deserialize, secret, and validate stages as the loader, with `DenySecrets` and an empty env snapshot. `from_toml_str_with` and `from_json_str_with` take the secret resolver and return `Loaded { config, warnings }`; unknown keys in a `deny_unknown` section and missing required fields are reported in one aggregated error. `from_defaults` deserializes only `ConfigMeta` const defaults. Doctests use these functions. `LoadEmbedded<Toml>` is the pipeline form of the same text: a source marker in front of `ConfigFile`, fed by `HasEmbeddedDocument`.
 
-`**config.local.toml`.** `TwelveFactorLocal` (§6.15). The file is gitignored by convention. The book says so. Production presets do not load it.
+**`{stem}.local.{ext}`** (`app.local.toml`). `TwelveFactorLocal` (§6.15). The file is gitignored by convention. The book says so. Production presets do not load it.
 
 **One JSON document in the environment.** Containers sometimes inject the whole config as a single variable. `{PREFIX}_DOCUMENT` (prefix `APP` → `APP_DOCUMENT`) is parsed as JSON when the `json` feature is on and the variable is present. It is the `EnvDocument` layer. The user inserts it where they want it in the `Product!` list, almost always after files and before `EnvVars`, so individual `APP__...` keys still win. Unset means `Ok(None)`. `APP_CONFIG` stays a filesystem path. Bootstrap removes `APP_CONFIG`, `APP_PROFILE`, and `APP_DOCUMENT` from the snapshot before the env layer runs.
 
@@ -1187,7 +1188,7 @@ let cfg: AppConfig = AppConfig::from_defaults()?;
 
 A duration without a unit is `ConfigError::Type`. `PathBuf`, `IpAddr`, and `SocketAddr` use `FromStr` and need no attribute.
 
-`**#[config(flatten)]`.** A section field's children appear on the parent in `ConfigMeta`, including env names. A flattened `HttpConfig` with field `port` under prefix `APP` produces `APP__PORT`, not `APP__HTTP__PORT`. A name clash with a sibling field is a compile error.
+`**#[config(flatten)]`.** A section field's children appear on the parent in `ConfigMeta`, including env names. A flattened `HttpConfig` with field `port` under prefix `APP` produces `APP__PORT`, not `APP__HTTP__PORT`. A name clash with a sibling field (or an alias, or an env name after folding) is a compile error, from the `const` check `ConfigMeta::checked` the derive emits. A key written both on the parent and under the flattened field in one document is `DuplicateKey` at load time.
 
 **Unknown keys per section.** `#[config(deny_unknown)]` on a section struct denies unknown keys in that subtree even when the app's global policy is `WarnUnknownKeys`. The root attribute denies the whole document. Libraries ship the stricter policy on their own struct when an unknown key would be a typo for a required setting.
 
@@ -1223,7 +1224,7 @@ Rules:
 * JSON and RON rewrites are lossy of comments and are behind an explicit `--format` flag. YAML comment preservation, when YAML exists, is best-effort and documented as such. The default `--write` format is TOML.
 * Golden test: every historical fixture loads into the current struct.
 
-Profile expansion is part of 0.1, because `config.{profile}.toml` and `$profiles` are how 0.1 selects an environment. Migration steps are 0.2. In 0.1, `PrepareFileLayer` expands `$profiles`, records `$version` on `HasLoadReport`, and removes that key without rewriting any other key. Key rewrites wait for the chain.
+Profile expansion is part of 0.1, because `{stem}.{profile}.{ext}` and `$profiles` are how 0.1 selects an environment. Migration steps are 0.2. In 0.1, `PrepareFileLayer` expands `$profiles`, records `$version` on `HasLoadReport`, and removes that key without rewriting any other key. Key rewrites wait for the chain.
 
 ---
 
@@ -1453,12 +1454,12 @@ Extra formats (YAML, JSON5, RON, INI) land as features whenever their parser is 
 | Value tree | Our `ConfigValue` with `Arc` nodes and a `Meta` arena. Figment and config-rs bridges are a post-0.1 crate |
 | Env coercion | Strings in the tree. The deserializer parses bools, numbers, enums, sequences, `PathBuf`, `IpAddr`, and `SocketAddr`. Durations require a unit. Byte sizes accept a bare number as bytes. No comma splitting |
 | Maps in env | One path segment is the map key, lowercased. File keys keep their case |
-| Local file | `config.local.toml` only through `TwelveFactorLocal`, never the production preset |
+| Local file | `{stem}.local.{ext}` only through `TwelveFactorLocal`, never the production preset |
 | Embedded and tests | `from_toml_str`, `from_json_str`, `from_defaults`, and `LoadEmbedded`. No process IO |
 | Includes | Root `$include` in 0.2, directory-locked. The name is reserved in 0.1 |
 | Decrypt | A reader wrapper for a satellite. The facade does not implement age or sops |
 | Fingerprint | FNV-1a of the redacted canonical JSON on `LoadReport` |
-| Env case and separator | Default separator `__`. Env segments fold to `snake_case`. File keys stay case-sensitive. Ambiguous folds error. Single `_` only via `LossyUnderscore` |
+| Env case and separator | Default separator `__`. Env segments fold to `snake_case`. File keys stay case-sensitive. Ambiguous folds error. Single `_` is rejected; `LossyUnderscore` is not available in 0.1 |
 | Unknown keys | Warnings on `HasLoadReport`. `DenyUnknownKeys` and `#[config(deny_unknown)]` opt into errors |
 | Interpolation | Off in every default preset. `#[config(interpolate)]` per field. Expanded nodes are marked. No secret and no file scheme in the interpolator |
 | Secrets in the tree | References only. Bytes exist in `Secret<T>` after resolve |
@@ -1469,7 +1470,7 @@ Extra formats (YAML, JSON5, RON, INI) land as features whenever their parser is 
 | Serde for `HasFields` | A fork PR is useful and is not on the critical path |
 | Cloud SDKs | Satellite crates |
 | Process environment | Read once into `EnvSnapshot` at bootstrap. Never `set_var`. Never `dotenv()` |
-| Profile keys | `$profiles` and `config.{profile}.toml`. Ordinary top-level keys are not profiles |
+| Profile keys | `$profiles` and `{stem}.{profile}.{ext}` beside the main file. Ordinary top-level keys are not profiles |
 | Null overlay | Stores null. Does not delete the lower key |
 | Reload rejection | Any `reload = "restart"` change skips the swap. Empty diffs skip notify |
 | Metrics | Tracing events. No metric component in 0.1 |
