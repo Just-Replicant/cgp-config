@@ -178,7 +178,7 @@ fn env_maps_with_the_schema_and_aliases_merge_by_precedence() {
         ]))
         .search(SearchPath::new("app").with_working_dir(Some(dir.path().to_path_buf())))
         .finish();
-    let loader = StdLoader::for_section::<App>(boot);
+    let loader = StdLoader::for_section::<App>(boot).unwrap();
     let config: App = loader.load().unwrap();
     assert_eq!(
         config.name, "env",
@@ -268,4 +268,39 @@ mod interpolation {
         assert_eq!(config.data_dir, "/srv/data");
         assert_eq!(config.motto, "${NOT_EXPANDED}");
     }
+
+    #[test]
+    fn a_reference_cannot_copy_a_secret_field() {
+        // `token` is `#[config(secret)]`; nothing marks the env node itself, so the
+        // schema is what refuses the reference.
+        let boot = Bootstrap::new("app")
+            .with_env(EnvSnapshot::from_iter([
+                ("APP__NAME", "n"),
+                ("APP__TOKEN", "hunter2"),
+                ("APP__DATA_DIR", "${ref:token}"),
+            ]))
+            .search(SearchPath::new("app"))
+            .finish();
+        let loader = Loader {
+            env_snapshot: boot.env_snapshot,
+            env_prefix: boot.env_prefix,
+            active_profile: boot.active_profile,
+            config_location: boot.config_location,
+            load_report: LoadReport::new(),
+        };
+        let error = CanLoadConfig::<App>::load_config(&loader).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("secret"), "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
+    }
+}
+
+#[test]
+fn a_flattened_key_written_twice_is_a_duplicate() {
+    let error = cgp_config::from_toml_str::<App>(
+        "name = \"x\"\nlevel = \"debug\"\n[logging]\nlevel = \"warn\"\n",
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "config::duplicate_key", "{error}");
+    assert!(error.to_string().contains("logging.level"), "{error}");
 }

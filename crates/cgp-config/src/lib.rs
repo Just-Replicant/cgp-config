@@ -103,7 +103,15 @@
 //! executable, and the platform config directory), `{app}.{profile}.toml` beside it, and
 //! `{PREFIX}__SECTION__KEY` env variables. Child presets add `.env` (`TwelveFactorDotenv`),
 //! `--set key=value` (`TwelveFactorCli`), `{app}.local.toml` (`TwelveFactorLocal`), and
-//! `conf.d/` (`TwelveFactorConfDir`); see [`presets`].
+//! `conf.d/` (`TwelveFactorConfDir`); `StrictPreset` turns unknown keys and an undefined
+//! active profile into errors; see [`presets`]. The layer lists have names in [`layers`]
+//! (`TwelveFactorCliLayers`, ...): `Bootstrap::layers` and `StdLoader<Layers>` use them
+//! so `--set`, `.env`, and `{PREFIX}_DOCUMENT` are read by a layer or refused, never
+//! dropped.
+//!
+//! The profile file is `{stem}.{profile}.{ext}` and the local file `{stem}.local.{ext}`,
+//! beside the main file (`config/app.toml` → `config/app.prod.toml`,
+//! `config/app.local.toml`); see ADR-002.
 //!
 //! # Features
 //!
@@ -112,10 +120,10 @@
 //! | `std` | yes | `alloc`, std sources and presets ([`bootstrap`], [`presets`], [`loader`]) |
 //! | `derive` | yes | `#[derive(ConfigSection)]` (see [`derive`](mod@derive)) |
 //! | `toml` | yes | TOML documents |
-//! | `json` | no | JSON documents and `{PREFIX}_DOCUMENT` |
+//! | `json` | no | JSON documents and `{PREFIX}_DOCUMENT` (`TwelveFactorDocumentLayers`) |
 //! | `alloc` | via `std` | the value tree, merge, deserializer, errors, `CoreConfigPreset` |
 //! | `dotenv` | no | `.env` files (`TwelveFactorDotenv`) |
-//! | `clap` | no | `--config`, `--profile`, `--set` for clap (`TwelveFactorCli`) |
+//! | `clap` | no | `--config`, `--profile`, `--env-prefix`, `--set` for clap, and `config_command()` (`TwelveFactorCli`) |
 //! | `interpolate` | no | `${VAR}` / `${path}` in opted-in fields (`InterpolatingPreset`) |
 //! | `validate-garde`, `validate-validator` | no | `ValidateWithGarde`, `ValidateWithValidator` |
 //! | `anyhow`, `eyre`, `std-error` | no | the fork's error-type providers |
@@ -129,6 +137,26 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub use cgp_config_core::*;
+/// `#[derive(ConfigSection)]`: see the [`derive`](mod@derive) module for the attributes.
+#[cfg(feature = "derive")]
+pub use cgp_config_derive::ConfigSection;
+/// Document formats: parsers with spans and duplicate-key rejection, and renderers.
+#[cfg(feature = "alloc")]
+pub use cgp_config_formats as formats;
+#[cfg(feature = "clap")]
+pub use cgp_config_providers::cli;
+#[cfg(feature = "dotenv")]
+pub use cgp_config_providers::dotenv;
+#[cfg(feature = "std")]
+pub use cgp_config_providers::loader::{LoadSection, Loaded, from_defaults};
+#[cfg(all(feature = "std", feature = "json"))]
+pub use cgp_config_providers::loader::{from_json_str, from_json_str_with};
+#[cfg(all(feature = "std", feature = "toml"))]
+pub use cgp_config_providers::loader::{from_toml_str, from_toml_str_with};
+#[cfg(feature = "std")]
+pub use cgp_config_providers::{
+    bootstrap, env, file, layers, loader, location, presets, read, sources, validate,
+};
 #[cfg(feature = "alloc")]
 pub use cgp_config_value::{
     AdjoinArrays, Admerge, AppendArrays, ConfigMap, ConfigValue, CoreConfigPreset, DeepMerge,
@@ -139,29 +167,6 @@ pub use cgp_config_value::{
 };
 #[cfg(feature = "interpolate")]
 pub use cgp_config_value::{InterpolateOptedIn, interpolate};
-
-/// Document formats: parsers with spans and duplicate-key rejection, and renderers.
-#[cfg(feature = "alloc")]
-pub use cgp_config_formats as formats;
-
-#[cfg(feature = "clap")]
-pub use cgp_config_providers::cli;
-#[cfg(feature = "dotenv")]
-pub use cgp_config_providers::dotenv;
-#[cfg(all(feature = "std", feature = "json"))]
-pub use cgp_config_providers::loader::from_json_str;
-#[cfg(all(feature = "std", feature = "toml"))]
-pub use cgp_config_providers::loader::from_toml_str;
-#[cfg(feature = "std")]
-pub use cgp_config_providers::loader::{LoadSection, from_defaults};
-#[cfg(feature = "std")]
-pub use cgp_config_providers::{
-    bootstrap, env, file, loader, location, presets, read, sources, validate,
-};
-
-/// `#[derive(ConfigSection)]`: see the [`derive`](mod@derive) module for the attributes.
-#[cfg(feature = "derive")]
-pub use cgp_config_derive::ConfigSection;
 
 #[cfg(feature = "derive")]
 pub mod derive;
@@ -186,12 +191,16 @@ pub mod prelude {
         ConfigMeta, ConfigMetaField, ConfigSection, LoadLimits, NoConfigMeta, StaticKeyPath,
         UseConfigMeta, config_check,
     };
+    #[cfg(feature = "derive")]
+    pub use cgp_config_derive::ConfigSection;
     #[cfg(feature = "alloc")]
     pub use cgp_config_formats::EnabledFormats;
     #[cfg(feature = "std")]
     pub use cgp_config_providers::bootstrap::{Bootstrap, Bootstrapped};
     #[cfg(feature = "std")]
-    pub use cgp_config_providers::loader::{LoadSection, MemoryLoader, StdLoader};
+    pub use cgp_config_providers::layers::*;
+    #[cfg(feature = "std")]
+    pub use cgp_config_providers::loader::{LoadSection, Loaded, MemoryLoader, StdLoader};
     #[cfg(feature = "std")]
     pub use cgp_config_providers::location::{ConfigLocation, SearchPath};
     #[cfg(feature = "std")]
@@ -213,8 +222,6 @@ pub mod prelude {
 
     #[cfg(feature = "alloc")]
     pub use crate::Value;
-    #[cfg(feature = "derive")]
-    pub use cgp_config_derive::ConfigSection;
 }
 
 /// Paths the derive's expansion names. Not public API.

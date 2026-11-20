@@ -1,0 +1,132 @@
+error[E0080]: evaluation panicked: cgp-config: `Parent.log_level` and `Common.log_level` both use the key `log_level` (keys and aliases must differ, ignoring ASCII case, across a section and the sections it flattens)
+  --> tests/ui/fail_flatten_keys.rs:12:23
+   |
+12 | #[derive(Deserialize, ConfigSection)]
+   |                       ^^^^^^^^^^^^^ evaluation of `_::<impl cgp_config::ConfigSection for Parent>::META` failed inside this call
+   |
+note: inside `cgp_config_core::key_check::<impl ConfigMeta>::checked`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |         check_visible(meta);
+   |         ^^^^^^^^^^^^^^^^^^^
+note: inside `cgp_config_core::key_check::check_visible`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |             check_names(a, b, false);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `cgp_config_core::key_check::check_names`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |                 clash("key", left_name, a, b, KEY_RULE);
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `cgp_config_core::key_check::clash`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |     message.fail()
+   |     ^^^^^^^^^^^^^^
+note: inside `cgp_config_core::key_check::Message::fail`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |             Ok(text) => panic!("{}", text),
+   |                         ------------------ in this macro invocation
+
+note: erroneous constant encountered
+  --> tests/ui/fail_flatten_keys.rs:12:23
+   |
+12 | #[derive(Deserialize, ConfigSection)]
+   |                       ^^^^^^^^^^^^^
+   |
+   = note: this note originates in the derive macro `ConfigSection` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0080]: evaluation panicked: cgp-config: `Common.log_level` and `Logging.level` both use the key `log_level` (keys and aliases must differ, ignoring ASCII case, across a section and the sections it flattens)
+  --> tests/ui/fail_flatten_keys.rs:25:23
+   |
+25 | #[derive(Deserialize, ConfigSection)]
+   |                       ^^^^^^^^^^^^^ evaluation of `_::<impl cgp_config::ConfigSection for TwoFlattened>::META` failed inside this call
+   |
+note: inside `cgp_config_core::key_check::<impl ConfigMeta>::checked`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |         check_visible(meta);
+   |         ^^^^^^^^^^^^^^^^^^^
+note: inside `cgp_config_core::key_check::check_visible`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |             check_names(a, b, false);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `cgp_config_core::key_check::check_names`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |                 clash("key", left_name, a, b, KEY_RULE);
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `cgp_config_core::key_check::clash`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |     message.fail()
+   |     ^^^^^^^^^^^^^^
+note: inside `cgp_config_core::key_check::Message::fail`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |             Ok(text) => panic!("{}", text),
+   |                         ------------------ in this macro invocation
+
+note: erroneous constant encountered
+  --> tests/ui/fail_flatten_keys.rs:25:23
+   |
+25 | #[derive(Deserialize, ConfigSection)]
+   |                       ^^^^^^^^^^^^^
+   |
+   = note: this note originates in the derive macro `ConfigSection` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0080]: evaluation panicked: cgp-config: `RawTwice.admin_port` and `Http.port` both use the env_raw variable `PORT` (an env_raw name is process-global, so it must be unique under the root)
+  --> tests/ui/fail_flatten_keys.rs:39:23
+   |
+39 | #[derive(Deserialize, ConfigSection)]
+   |                       ^^^^^^^^^^^^^ evaluation of `_::<impl cgp_config::ConfigSection for RawTwice>::META` failed inside this call
+   |
+note: inside `cgp_config_core::key_check::<impl ConfigMeta>::checked`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |         check_raw(meta);
+   |         ^^^^^^^^^^^^^^^
+note: inside `cgp_config_core::key_check::check_raw`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   | /                 clash(
+   | |                     "env_raw variable",
+   | |                     left,
+   | |                     a,
+   | |                     b,
+   | |                     "an env_raw name is process-global, so it must be unique under the root",
+   | |                 );
+   | |_________________^
+note: inside `cgp_config_core::key_check::clash`
+  --> $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |     message.fail()
+   |     ^^^^^^^^^^^^^^
+note: inside `cgp_config_core::key_check::Message::fail`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: $WORKSPACE/crates/cgp-config-core/src/key_check.rs
+   |
+   |             Ok(text) => panic!("{}", text),
+   |                         ------------------ in this macro invocation
+
+note: erroneous constant encountered
+  --> tests/ui/fail_flatten_keys.rs:39:23
+   |
+39 | #[derive(Deserialize, ConfigSection)]
+   |                       ^^^^^^^^^^^^^
+   |
+   = note: this note originates in the derive macro `ConfigSection` (in Nightly builds, run with -Z macro-backtrace for more info)
