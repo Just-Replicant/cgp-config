@@ -45,6 +45,7 @@ serde      = { version = "1", default-features = false, features = ["alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 spin       = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
 toml       = { version = "1.2", default-features = false, features = ["parse", "serde", "display"] }
+toml_parser = { version = "1.1", default-features = false, features = ["alloc"] }
 
 # Std-only (sources, feature-gated integrations, the derive).
 clap        = { version = "4.6", default-features = false, features = ["std"] }

@@ -120,11 +120,9 @@ fn duplicate_keys_are_rejected() {
     ] {
         let error = result.expect_err(name);
         let text = error.to_string();
-        assert!(
-            error.code() == "config::duplicate_key" || error.code() == "config::parse",
-            "{name}: {text}"
-        );
+        assert_eq!(error.code(), "config::duplicate_key", "{name}: {text}");
         assert!(text.contains(path), "{name}: `{path}` in {text}");
+        assert!(text.contains("(first at "), "{name}: both spans in {text}");
     }
 }
 

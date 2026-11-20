@@ -146,6 +146,9 @@ impl Parser<'_> {
     fn object(&mut self, depth: usize) -> Result<Kind, ConfigError> {
         self.pos += 1;
         let mut map = ConfigMap::new();
+        // Where each key was written, for a duplicate's "first at".
+        let mut key_spans: alloc::collections::BTreeMap<String, (usize, usize)> =
+            alloc::collections::BTreeMap::new();
         self.skip_whitespace();
         if self.peek() == Some(b'}') {
             self.pos += 1;
@@ -166,11 +169,14 @@ impl Parser<'_> {
             self.pos += 1;
             self.admit(depth + 1)?;
             self.path.push(key.as_str());
-            if map.contains_key(&key) {
-                let error =
-                    ConfigError::duplicate_key(self.path.clone(), self.meta(key_start, key_end));
-                return Err(error);
+            if let Some(&(first_start, first_end)) = key_spans.get(&key) {
+                return Err(ConfigError::duplicate_key_with_first(
+                    self.path.clone(),
+                    self.meta(key_start, key_end),
+                    self.meta(first_start, first_end),
+                ));
             }
+            key_spans.insert(key.clone(), (key_start, key_end));
             self.skip_whitespace();
             let value = self.value(depth + 1)?;
             self.path.pop();
@@ -432,6 +438,10 @@ mod tests {
         let error = parse("{\"a\": {\"b\": 1, \"b\": 2}}").unwrap_err();
         assert_eq!(error.code(), "config::duplicate_key");
         assert_eq!(error.path().unwrap().to_string(), "a.b");
+        assert_eq!(
+            error.to_string(),
+            "duplicate key a.b at t.json:1:16 (first at t.json:1:8)"
+        );
     }
 
     #[test]

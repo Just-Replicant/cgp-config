@@ -197,6 +197,7 @@ dependencies = [
  "proptest",
  "serde_json",
  "toml",
+ "toml_parser",
 ]
 
 [[package]]

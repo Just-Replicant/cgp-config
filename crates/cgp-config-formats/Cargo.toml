@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = ["toml"]
 # TOML 1.1 (the `toml` crate's spanned document parser and its writer).
-toml = ["dep:toml"]
+toml = ["dep:toml", "dep:toml_parser"]
 # JSON (RFC 8259) through this crate's own spanned, duplicate-rejecting parser.
 json = []
 # Keeps TOML tables in source order (`toml/preserve_order` needs `std`).
@@ -31,6 +31,8 @@ cgp-config-value = { workspace = true }
 cgp-fork         = { workspace = true, features = ["alloc"] }
 serde_json       = { workspace = true }
 toml             = { workspace = true, optional = true }
+# Only to locate both definitions of a duplicate TOML key (`toml` reports one span).
+toml_parser      = { workspace = true, optional = true }
 
 [dev-dependencies]
 cgp-fork = { workspace = true, features = ["alloc", "anyhow"] }

@@ -11,8 +11,9 @@
 //!
 //! * records the origin and the span (`line:column`) of every node in its `Meta`, so
 //!   later errors read `config/app.toml:12:8`;
-//! * rejects duplicate keys (TOML as a syntax error, JSON as `ConfigError::DuplicateKey`
-//!   with both the path and the position);
+//! * rejects duplicate keys as `ConfigError::DuplicateKey` with the path and **both**
+//!   positions (`duplicate key a at app.toml:2:1 (first at app.toml:1:1)`); for TOML the
+//!   first position is recovered from the parse events (`toml` reports only the second);
 //! * enforces `LoadLimits::max_depth` and `max_keys` (JSON while parsing; TOML after its
 //!   own recursion guard);
 //! * reports syntax errors as `ConfigError::Parse { origin, span, message }`.

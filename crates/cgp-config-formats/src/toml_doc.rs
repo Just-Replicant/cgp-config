@@ -1,5 +1,7 @@
 //! TOML through the `toml` crate's spanned document parser.
 
+mod duplicates;
+
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -24,8 +26,13 @@ use crate::LineIndex;
 /// assert_eq!(port.as_u64(), Some(8080));
 /// assert_eq!(port.meta().span.map(|s| (s.line, s.column)), Some((2, 8)));
 ///
+/// // A duplicate key names both definitions.
 /// let error = parse_toml(&origin, "a = 1\na = 2\n", &LoadLimits::DEFAULT).unwrap_err();
-/// assert!(error.to_string().starts_with("app.toml:2:1: syntax error"), "{error}");
+/// assert_eq!(error.code(), "config::duplicate_key");
+/// assert_eq!(
+///     error.to_string(),
+///     "duplicate key a at app.toml:2:1 (first at app.toml:1:1)"
+/// );
 /// # Ok::<(), cgp_config_core::ConfigError>(())
 /// ```
 ///
@@ -34,7 +41,8 @@ use crate::LineIndex;
 ///
 /// # Errors
 ///
-/// `ConfigError::Parse` with `line:column` for invalid TOML, duplicate keys included;
+/// `ConfigError::Parse` with `line:column` for invalid TOML; `ConfigError::DuplicateKey`
+/// with the path and both locations for a key (or table) defined twice;
 /// `LimitExceeded` past `max_bytes`, `max_depth`, or `max_keys`.
 pub fn parse_toml(
     origin: &Origin,
@@ -46,8 +54,24 @@ pub fn parse_toml(
     }
     let index = LineIndex::new(text);
     let document = DeTable::parse(text).map_err(|error| {
+        let message = error.message().trim_end();
+        if message.starts_with("duplicate key")
+            && let Some(range) = error.span()
+            && let Some((path, first)) = duplicates::locate(text, range.start)
+        {
+            let meta = |start: usize, end: usize| {
+                Meta::new(origin.clone()).with_span(index.span(start, end))
+            };
+            let second = meta(range.start, range.end);
+            return match first {
+                Some((start, end)) => {
+                    ConfigError::duplicate_key_with_first(path, second, meta(start, end))
+                }
+                None => ConfigError::duplicate_key(path, second),
+            };
+        }
         let span = error.span().map(|range| index.span(range.start, range.end));
-        ConfigError::parse(origin.clone(), span, error.message().trim_end())
+        ConfigError::parse(origin.clone(), span, message)
     })?;
     let mut converter = Converter {
         origin,
@@ -184,7 +208,7 @@ pub fn render_toml(value: &ConfigValue) -> Result<String, ConfigError> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::ToString;
+    use alloc::string::{String, ToString};
 
     use cgp_config_core::{LoadLimits, Origin};
     use cgp_config_value::ConfigValue;
@@ -224,11 +248,45 @@ mod tests {
         assert_eq!(tree.get_path(&"arr[1]".into()).unwrap().as_str(), Some("x"));
     }
 
+    fn duplicate(text: &str) -> String {
+        let error = parse(text).unwrap_err();
+        assert_eq!(error.code(), "config::duplicate_key", "{error}");
+        error.to_string()
+    }
+
+    #[test]
+    fn duplicates_name_both_definitions() {
+        assert_eq!(
+            duplicate("[a]\nx = 1\n[a]\n"),
+            "duplicate key a at t.toml:3:2 (first at t.toml:1:2)"
+        );
+        assert_eq!(
+            duplicate("[s]\nport = 1\nhost = \"x\"\nport = 2\n"),
+            "duplicate key s.port at t.toml:4:1 (first at t.toml:2:1)"
+        );
+        assert_eq!(
+            duplicate("a.b = 1\nc = 2\na.b = 3\n"),
+            "duplicate key a.b at t.toml:3:3 (first at t.toml:1:3)"
+        );
+        assert_eq!(
+            duplicate("t = { x = 1, y = 2, x = 3 }\n"),
+            "duplicate key t.x at t.toml:1:21 (first at t.toml:1:7)"
+        );
+        assert_eq!(
+            duplicate("[[srv]]\nn = 1\n[[srv]]\nn = 2\nn = 3\n"),
+            "duplicate key srv[1].n at t.toml:5:1 (first at t.toml:4:1)"
+        );
+        assert_eq!(
+            duplicate("\"quoted key\" = 1\n'quoted key' = 2\n"),
+            "duplicate key \"quoted key\" at t.toml:2:1 (first at t.toml:1:1)"
+        );
+    }
+
     #[test]
     fn errors_and_limits() {
         let error = parse("[a]\nx = 1\n[a]\n").unwrap_err();
-        assert_eq!(error.code(), "config::parse");
-        assert!(error.to_string().starts_with("t.toml:3:"), "{error}");
+        assert_eq!(error.code(), "config::duplicate_key");
+        assert!(error.to_string().contains("t.toml:3:"), "{error}");
         assert!(parse("x = ").is_err());
         let limits = LoadLimits::DEFAULT.with_max_keys(2);
         let error = parse_toml(&Origin::Unknown, "a = 1\nb = 2\nc = 3\n", &limits).unwrap_err();
