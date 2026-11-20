@@ -6,13 +6,14 @@
 //! type is a `#[derive(ConfigSection)]` type; contexts with their own validators or
 //! another preset are a few lines of `delegate_components!` (see the crate docs).
 
+use core::marker::PhantomData;
 use std::path::PathBuf;
 
 use cgp_config_core::components::*;
 use cgp_config_core::markers::{Defaults, EnvVars, InMemory};
 use cgp_config_core::{
     ConfigError, ConfigMeta, ConfigMetaField, ConfigSection, EnvSnapshot, IdentityLayer,
-    LoadReport, Nested,
+    LoadLayered, LoadReport, LoadWarning, Nested,
 };
 #[cfg(any(feature = "toml", feature = "json"))]
 use cgp_config_core::{LoadLimits, Origin};
@@ -22,32 +23,47 @@ use cgp_fork::extra::error::RaiseFrom;
 use cgp_fork::prelude::*;
 
 use crate::bootstrap::Bootstrapped;
+use crate::layers::{LayerList, TestLayers, TwelveFactorLayers};
 use crate::location::ConfigLocation;
 use crate::presets::{TestConfigPreset, TwelveFactorPreset};
 use crate::read::ConfigFileReaderComponent;
 use crate::sources::CliOverrides;
 
-/// A loader for applications: `Defaults`, the config file, the profile file, and env,
-/// from a [`Bootstrapped`] (see [`Bootstrap`](crate::bootstrap::Bootstrap)).
+/// A loader for applications, from a [`Bootstrapped`] (see
+/// [`Bootstrap`](crate::bootstrap::Bootstrap)): `TwelveFactorPreset` with the layer list
+/// `Layers` (default [`TwelveFactorLayers`]: `Defaults`, the config file, the profile
+/// file, env).
+///
+/// It keeps every bootstrap input (the `{PREFIX}_DOCUMENT` text, the `.env` path, the
+/// `--set` overrides), so any standard list works: `StdLoader<TwelveFactorCliLayers>`
+/// reads `--set`, `StdLoader<TwelveFactorDotenvLayers>` reads `.env` (feature `dotenv`),
+/// `StdLoader<TwelveFactorDocumentLayers>` reads `{PREFIX}_DOCUMENT` (feature `json`).
+/// Construction fails when a bootstrap input would be read by no layer of the list
+/// ([`Bootstrapped::check_layers`]) instead of dropping it.
 ///
 /// ```no_run
 /// # use cgp_config_core::ConfigSection;
 /// # fn demo<AppConfig>() -> Result<(), cgp_config_core::ConfigError>
-/// # where AppConfig: ConfigSection, cgp_config_providers::loader::StdLoader: cgp_config_core::CanLoadConfig<AppConfig> {
+/// # where AppConfig: ConfigSection, cgp_config_providers::loader::StdLoader<cgp_config_providers::layers::TwelveFactorCliLayers>: cgp_config_core::CanLoadConfig<AppConfig> {
 /// use cgp_config_core::CanLoadConfig;
 /// use cgp_config_providers::bootstrap::Bootstrap;
+/// use cgp_config_providers::layers::TwelveFactorCliLayers;
 /// use cgp_config_providers::loader::StdLoader;
 ///
-/// let boot = Bootstrap::new("my-app").capture_env()?.from_args(std::env::args())?.finish();
-/// let loader = StdLoader::for_section::<AppConfig>(boot);
+/// let boot = Bootstrap::new("my-app")
+///     .layers::<TwelveFactorCliLayers>()
+///     .capture_env()?
+///     .from_args(std::env::args())?
+///     .finish();
+/// let loader = StdLoader::<TwelveFactorCliLayers>::with_layers(boot)?.with_section::<AppConfig>();
 /// let config: AppConfig = loader.load_config()?;
 /// for warning in loader.load_report.warnings() {
 ///     eprintln!("config: {warning}");
 /// }
 /// # Ok(()) }
 /// ```
-#[derive(Debug, HasField)]
-pub struct StdLoader {
+#[derive(HasField)]
+pub struct StdLoader<Layers = TwelveFactorLayers> {
     /// The env snapshot (bootstrap keys removed).
     pub env_snapshot: EnvSnapshot,
     /// The env prefix.
@@ -56,33 +72,87 @@ pub struct StdLoader {
     pub active_profile: String,
     /// The main config file.
     pub config_location: ConfigLocation,
+    /// The `{PREFIX}_DOCUMENT` text (the `EnvDocument` layer).
+    pub env_document: Option<String>,
+    /// The `.env` file (the `DotEnv` layer).
+    pub dotenv_path: Option<PathBuf>,
+    /// The `--set` overrides (the `CliArgs` layer).
+    pub cli_overrides: CliOverrides,
     /// The root schema.
     pub config_meta: Option<&'static ConfigMeta>,
     /// Warnings of the last load.
     pub load_report: LoadReport,
+    layers: PhantomData<fn() -> Layers>,
+}
+
+impl<Layers> core::fmt::Debug for StdLoader<Layers> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StdLoader")
+            .field("env_snapshot", &self.env_snapshot)
+            .field("env_prefix", &self.env_prefix)
+            .field("active_profile", &self.active_profile)
+            .field("config_location", &self.config_location)
+            .field("env_document", &self.env_document.as_ref().map(|_| "<set>"))
+            .field("dotenv_path", &self.dotenv_path)
+            .field("cli_overrides", &self.cli_overrides)
+            .field("config_meta", &self.config_meta.map(|meta| meta.name))
+            .field("load_report", &self.load_report)
+            .finish()
+    }
 }
 
 impl StdLoader {
-    /// A loader for `bootstrapped`, without a schema (plain serde types).
-    #[must_use]
-    pub fn new(bootstrapped: Bootstrapped) -> Self {
-        Self {
+    /// A twelve-factor loader for `bootstrapped`, without a schema (plain serde types).
+    ///
+    /// # Errors
+    ///
+    /// As [`Bootstrapped::check_layers`]: `--set` overrides, a `{PREFIX}_DOCUMENT`, or an
+    /// explicit `.env` path, none of which the twelve-factor layers read.
+    pub fn new(bootstrapped: Bootstrapped) -> Result<Self, ConfigError> {
+        Self::with_layers(bootstrapped)
+    }
+
+    /// A twelve-factor loader for `bootstrapped` with the schema of `Config`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn for_section<Config: ConfigSection>(
+        bootstrapped: Bootstrapped,
+    ) -> Result<Self, ConfigError> {
+        Ok(Self::new(bootstrapped)?.with_section::<Config>())
+    }
+}
+
+impl<Layers: LayerList> StdLoader<Layers> {
+    /// A loader for `bootstrapped` reading the layers `Layers`, without a schema.
+    ///
+    /// # Errors
+    ///
+    /// As [`Bootstrapped::check_layers`].
+    pub fn with_layers(bootstrapped: Bootstrapped) -> Result<Self, ConfigError> {
+        let bootstrapped = bootstrapped.check_layers::<Layers>()?;
+        Ok(Self {
             env_snapshot: bootstrapped.env_snapshot,
             env_prefix: bootstrapped.env_prefix,
             active_profile: bootstrapped.active_profile,
             config_location: bootstrapped.config_location,
+            env_document: bootstrapped.env_document,
+            dotenv_path: bootstrapped.dotenv_path,
+            cli_overrides: bootstrapped.cli_overrides,
             config_meta: None,
             load_report: LoadReport::new(),
-        }
+            layers: PhantomData,
+        })
     }
+}
 
-    /// A loader for `bootstrapped` with the schema of `Config`.
+impl<Layers> StdLoader<Layers> {
+    /// Uses the schema of `Config` (defaults, env mapping, schema rules).
     #[must_use]
-    pub fn for_section<Config: ConfigSection>(bootstrapped: Bootstrapped) -> Self {
-        Self {
-            config_meta: Some(Config::META),
-            ..Self::new(bootstrapped)
-        }
+    pub fn with_section<Config: ConfigSection>(mut self) -> Self {
+        self.config_meta = Some(Config::META);
+        self
     }
 
     /// Loads `Config` (`load_config` with the type named).
@@ -100,12 +170,13 @@ impl StdLoader {
 
 delegate_components! {
     #[unchecked]
-    StdLoader {
+    <Layers> StdLoader<Layers> {
         preset TwelveFactorPreset,
         ErrorTypeProviderComponent: UseType<ConfigError>,
         ErrorRaiserComponent: RaiseFrom,
         RootConfigMetaComponent: ConfigMetaField,
         ConfigValidatorComponent: Nested,
+        ConfigLoaderComponent: LoadLayered<Layers>,
     }
 }
 
@@ -126,11 +197,6 @@ pub struct MemoryLoader {
     pub config_meta: Option<&'static ConfigMeta>,
     /// Warnings of the last load.
     pub load_report: LoadReport,
-    // `TwelveFactorPreset` wires the std file reader; the memory loader has no files, so
-    // its location is always empty.
-    config_location: ConfigLocation,
-    cli_overrides: CliOverrides,
-    dotenv_path: Option<PathBuf>,
 }
 
 impl MemoryLoader {
@@ -144,9 +210,6 @@ impl MemoryLoader {
             active_profile: "default".to_owned(),
             config_meta: Some(Config::META),
             load_report: LoadReport::new(),
-            config_location: ConfigLocation::none(),
-            cli_overrides: CliOverrides::new(),
-            dotenv_path: None,
         }
     }
 
@@ -206,6 +269,50 @@ impl MemoryLoader {
     {
         self.load_config()
     }
+
+    /// Loads `Config` through the loader's stages (collect, interpolate, deserialize,
+    /// the preset secrets stage), then `resolver` (the caller's secret resolution), then
+    /// validation, and returns the config with the warnings of the load.
+    ///
+    /// # Errors
+    ///
+    /// Any `ConfigError` of the pipeline or of `resolver`.
+    pub fn load_with<Config>(
+        &self,
+        resolver: impl FnOnce(&mut Config) -> Result<(), ConfigError>,
+    ) -> Result<Loaded<Config>, ConfigError>
+    where
+        Self: HasEmptyConfigValue
+            + CanReportWarning
+            + CanCollectLayers<TestLayers>
+            + CanInterpolate<Config>
+            + CanDeserializeConfig<Config>
+            + CanResolveSecrets<Config>
+            + CanValidateConfig<Config>
+            + HasErrorType<Error = ConfigError>,
+    {
+        self.clear_warnings();
+        let tree = self.collect_layers(self.empty_config_value(), PhantomData::<TestLayers>)?;
+        let tree = self.interpolate(tree)?;
+        let mut config = self.deserialize_config(tree)?;
+        self.resolve_secrets(&mut config)?;
+        resolver(&mut config)?;
+        self.validate_config(&config)?;
+        Ok(Loaded {
+            config,
+            warnings: self.load_report.warnings(),
+        })
+    }
+}
+
+/// A config with the warnings of the load that produced it.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct Loaded<Config> {
+    /// The config.
+    pub config: Config,
+    /// The warnings, in order (unknown keys, deprecated names, ...).
+    pub warnings: Vec<LoadWarning>,
 }
 
 #[cfg(any(feature = "toml", feature = "json"))]
@@ -237,12 +344,10 @@ delegate_components! {
     }
 }
 
-// `ConfigFileReaderComponent` is replayed by the presets above.
-const _: Option<ConfigFileReaderComponent> = None;
-
-/// Loads `Config` from TOML text: defaults, then the document; deserialized, then
-/// validated. No process IO. Warnings (unknown keys) are dropped; use
-/// [`MemoryLoader::from_toml`] to read them.
+/// Loads `Config` from TOML text: defaults, then the document; deserialized, the
+/// preset secrets stage, then validated: the stages of a loader. No process IO.
+/// Warnings (unknown keys) are dropped; [`from_toml_str_with`] returns them and takes a
+/// secret resolver.
 ///
 /// # Errors
 ///
@@ -254,6 +359,48 @@ where
     MemoryLoader: CanLoadConfig<Config, Error = ConfigError>,
 {
     MemoryLoader::from_toml::<Config>(text)?.load()
+}
+
+/// [`from_toml_str`] with the caller's secret resolution and the warnings: `resolver` runs
+/// after deserialization and before validation, as the secrets stage of a loader does.
+///
+/// # Errors
+///
+/// As [`from_toml_str`], and any error of `resolver`.
+#[cfg(feature = "toml")]
+pub fn from_toml_str_with<Config>(
+    text: &str,
+    resolver: impl FnOnce(&mut Config) -> Result<(), ConfigError>,
+) -> Result<Loaded<Config>, ConfigError>
+where
+    Config: ConfigSection,
+    MemoryLoader: CanInterpolate<Config>
+        + CanDeserializeConfig<Config>
+        + CanResolveSecrets<Config>
+        + CanValidateConfig<Config>,
+{
+    MemoryLoader::from_toml::<Config>(text)?.load_with(resolver)
+}
+
+/// [`from_json_str`] with the caller's secret resolution and the warnings, as
+/// [`from_toml_str_with`].
+///
+/// # Errors
+///
+/// As [`from_toml_str_with`].
+#[cfg(feature = "json")]
+pub fn from_json_str_with<Config>(
+    text: &str,
+    resolver: impl FnOnce(&mut Config) -> Result<(), ConfigError>,
+) -> Result<Loaded<Config>, ConfigError>
+where
+    Config: ConfigSection,
+    MemoryLoader: CanInterpolate<Config>
+        + CanDeserializeConfig<Config>
+        + CanResolveSecrets<Config>
+        + CanValidateConfig<Config>,
+{
+    MemoryLoader::from_json::<Config>(text)?.load_with(resolver)
 }
 
 /// Loads `Config` from JSON text, as [`from_toml_str`].

@@ -183,7 +183,7 @@ impl CliOverrides {
             }
             let leaf = ConfigValue::from(value).with_origin(origin.clone());
             let layer = nest(&parsed, leaf, &origin);
-            root = cgp_config_value::merge::merge(
+            root = cgp_config_value::merge::merge_keeping_patches(
                 root,
                 layer,
                 &cgp_config_value::merge::MergeOptions::DEEP,
@@ -196,11 +196,15 @@ impl CliOverrides {
     }
 }
 
-/// The largest array index an override may name (`servers[4095]`): the layer pads with
-/// nulls up to it, so the bound keeps `--set a[999999999]=x` from allocating gigabytes.
+/// The largest array index an override may name (`servers[4095]`). An index segment
+/// patches that one element of the array below (see `cgp_config_value::merge`), so no
+/// padding is allocated; the bound only rejects indices no real array reaches.
 pub const MAX_OVERRIDE_INDEX: usize = 4096;
 
-/// `value` placed at `path`, with arrays for index segments.
+/// `value` placed at `path`. A key segment becomes a one-entry map; an index segment
+/// becomes an *index patch* (a map keyed by the decimal index, flagged
+/// `Meta::index_patch`) that the merge applies to that element of the array below,
+/// leaving the other elements alone.
 fn nest(path: &KeyPath, value: ConfigValue, origin: &Origin) -> ConfigValue {
     path.segments()
         .iter()
@@ -211,11 +215,11 @@ fn nest(path: &KeyPath, value: ConfigValue, origin: &Origin) -> ConfigValue {
                 cgp_config_core::Meta::new(origin.clone()),
             ),
             PathSegment::Index(index) => {
-                let mut elements = vec![ConfigValue::null(); *index];
-                elements.push(inner);
+                let mut meta = cgp_config_core::Meta::new(origin.clone());
+                meta.index_patch = true;
                 ConfigValue::new(
-                    Kind::Array(elements),
-                    cgp_config_core::Meta::new(origin.clone()),
+                    Kind::Map([(index.to_string(), inner)].into_iter().collect()),
+                    meta,
                 )
             }
         })
@@ -287,9 +291,10 @@ mod env_document {
     use cgp_config_core::markers::EnvDocument;
     use cgp_config_core::{
         CanReportWarning, ConfigError, HasConfigValueType, HasEnvPrefix, HasLoadLimits,
-        LayerSkipped, Origin, SourceLoaded, SourceLoader, SourceLoaderComponent,
+        HasRootConfigMeta, LayerSkipped, Origin, SourceLoaded, SourceLoader, SourceLoaderComponent,
     };
     use cgp_config_value::ConfigValue;
+    use cgp_config_value::schema::canonicalize;
     use cgp_fork::prelude::*;
 
     use super::HasEnvDocument;
@@ -297,7 +302,10 @@ mod env_document {
     use crate::read::FileText;
 
     /// Loads `EnvDocument`: `{PREFIX}_DOCUMENT` as one JSON object (feature `json`).
-    /// Absent when the variable was not set.
+    /// Absent when the variable was not set. Like the CLI layer, the document is
+    /// canonicalized against the root schema (aliases and mounted keys renamed, with
+    /// `DeprecatedKey` warnings; flattened keys moved under their field), so it merges
+    /// with the other layers by field, not by spelling.
     pub struct LoadEnvDocument;
 
     #[cgp_impl(LoadEnvDocument)]
@@ -307,6 +315,7 @@ mod env_document {
             + CanRaiseError<ConfigError>
             + HasEnvDocument
             + HasEnvPrefix
+            + HasRootConfigMeta
             + HasLoadLimits
             + CanReportWarning
             + CanLog<SourceLoaded>
@@ -327,6 +336,11 @@ mod env_document {
             file.origin = origin.clone();
             let tree = finish_document(tree, &file, &mut |w| self.report_warning(w))
                 .map_err(Self::raise_error)?;
+            let tree = match self.root_config_meta() {
+                Some(meta) => canonicalize(tree, meta, &mut |w| self.report_warning(w))
+                    .map_err(Self::raise_error)?,
+                None => tree,
+            };
             self.log(SourceLoaded::new(origin, tree.count_entries()));
             Ok(Some(tree))
         }
@@ -335,7 +349,111 @@ mod env_document {
 
 #[cfg(test)]
 mod tests {
+    use cgp_config_value::ConfigValue;
+    use cgp_config_value::merge::{MergeOptions, merge};
+
     use super::CliOverrides;
+
+    fn servers_file() -> ConfigValue {
+        let server = |host: &str, port: i64| {
+            ConfigValue::map([
+                ("host", ConfigValue::from(host)),
+                ("port", ConfigValue::from(port)),
+            ])
+        };
+        ConfigValue::map([(
+            "servers",
+            ConfigValue::array([server("a", 1), server("b", 2), server("c", 3)]),
+        )])
+    }
+
+    #[test]
+    fn index_override_patches_one_element() {
+        let layer = CliOverrides::new()
+            .with("servers[1].host", "x")
+            .with("servers[2].port", "9")
+            .to_layer()
+            .unwrap()
+            .unwrap();
+        let merged = merge(servers_file(), layer, &MergeOptions::DEEP).unwrap();
+        let host = |i: usize| {
+            merged
+                .get_path(&format!("servers[{i}].host").as_str().into())
+                .unwrap()
+                .as_str()
+                .map(str::to_owned)
+        };
+        assert_eq!(merged.get("servers").unwrap().as_array().unwrap().len(), 3);
+        assert_eq!(host(0).as_deref(), Some("a"));
+        assert_eq!(host(1).as_deref(), Some("x"));
+        assert_eq!(host(2).as_deref(), Some("c"));
+        // Untouched fields of a patched element stay.
+        assert!(
+            merged
+                .get_path(&"servers[1].port".into())
+                .unwrap()
+                .as_i64()
+                .is_some()
+        );
+        assert_eq!(
+            merged.get_path(&"servers[2].port".into()).unwrap().as_str(),
+            Some("9")
+        );
+    }
+
+    #[test]
+    fn index_override_appends_or_rejects_gaps() {
+        let append = CliOverrides::new().with("servers[3].host", "d");
+        let merged = merge(
+            servers_file(),
+            append.to_layer().unwrap().unwrap(),
+            &MergeOptions::DEEP,
+        )
+        .unwrap();
+        assert_eq!(merged.get("servers").unwrap().as_array().unwrap().len(), 4);
+        let gap = CliOverrides::new().with("servers[5].host", "d");
+        let error = merge(
+            servers_file(),
+            gap.to_layer().unwrap().unwrap(),
+            &MergeOptions::DEEP,
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "config::type");
+        assert!(error.to_string().contains("past the end"), "{error}");
+        // With nothing below, indices must start at 0 without gaps.
+        let fresh = CliOverrides::new()
+            .with("list[0]", "a")
+            .with("list[1]", "b");
+        let merged = merge(
+            ConfigValue::empty_map(),
+            fresh.to_layer().unwrap().unwrap(),
+            &MergeOptions::DEEP,
+        )
+        .unwrap();
+        assert_eq!(merged.get("list").unwrap().as_array().unwrap().len(), 2);
+        let sparse = CliOverrides::new().with("list[1]", "b");
+        assert!(
+            merge(
+                ConfigValue::empty_map(),
+                sparse.to_layer().unwrap().unwrap(),
+                &MergeOptions::DEEP,
+            )
+            .is_err()
+        );
+        // A patch over a scalar is a conflict, not a silent replacement.
+        let scalar = ConfigValue::map([("servers", ConfigValue::from("a,b"))]);
+        let error = merge(
+            scalar,
+            CliOverrides::new()
+                .with("servers[0]", "x")
+                .to_layer()
+                .unwrap()
+                .unwrap(),
+            &MergeOptions::DEEP,
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "config::merge_conflict");
+    }
 
     #[test]
     fn overrides_become_a_layer() {
@@ -349,11 +467,14 @@ mod tests {
             layer.get_path(&"http.port".into()).unwrap().as_str(),
             Some("9090")
         );
+        // `servers[1]` is an index patch for element 1 only: no null padding.
+        let servers = layer.get("servers").unwrap();
+        assert!(cgp_config_value::merge::is_index_patch(servers));
+        assert_eq!(servers.as_map().unwrap().len(), 1);
         assert_eq!(
-            layer.get_path(&"servers[1].host".into()).unwrap().as_str(),
+            servers.get("1").unwrap().get("host").unwrap().as_str(),
             Some("b")
         );
-        assert!(layer.get_path(&"servers[0]".into()).unwrap().is_null());
         assert_eq!(layer.get("name").unwrap().as_str(), Some(" x=y"));
         assert_eq!(
             layer
@@ -368,6 +489,11 @@ mod tests {
         let huge = CliOverrides::new().with("a[999999999]", "1");
         assert_eq!(huge.to_layer().unwrap_err().code(), "config::parse");
         let conflict = CliOverrides::new().with("a", "1").with("a.b", "2");
+        assert_eq!(
+            conflict.to_layer().unwrap_err().code(),
+            "config::merge_conflict"
+        );
+        let conflict = CliOverrides::new().with("a[0]", "1").with("a.b", "2");
         assert_eq!(
             conflict.to_layer().unwrap_err().code(),
             "config::merge_conflict"
