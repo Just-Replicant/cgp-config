@@ -55,6 +55,12 @@ pub struct Meta {
     pub secret: bool,
     /// The interpolator already expanded this node; it is not scanned again.
     pub expanded: bool,
+    /// The node is a map that *patches an array by index* (keys are decimal indices),
+    /// as `--set servers[1].host=b` produces. Merging applies it to the array below
+    /// element by element instead of replacing the array; with no array below, the
+    /// indices must run from 0 without gaps. The merge never leaves such a node in its
+    /// result.
+    pub index_patch: bool,
     /// The node came from the overlay of this profile.
     pub profile: Option<Arc<str>>,
     /// The node was rewritten by a migration from this schema version (0.2).

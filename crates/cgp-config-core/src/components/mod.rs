@@ -46,9 +46,9 @@ pub use report::{CanReportWarning, HasLoadReport, LoadReportComponent, WarningRe
 pub use secrets::{CanResolveSecrets, SecretsResolver, SecretsResolverComponent};
 pub use source::{CanLoadSource, SourceLoader, SourceLoaderComponent};
 pub use validate::{CanValidateConfig, ConfigValidator, ConfigValidatorComponent};
-
-pub use crate::root_meta::{HasRootConfigMeta, RootConfigMetaComponent, RootConfigMetaGetter};
 pub use value::{
     ConfigValueOf, ConfigValueTypeProvider, ConfigValueTypeProviderComponent, EmptyConfigValue,
     EmptyConfigValueComponent, HasConfigValueType, HasEmptyConfigValue,
 };
+
+pub use crate::root_meta::{HasRootConfigMeta, RootConfigMetaComponent, RootConfigMetaGetter};

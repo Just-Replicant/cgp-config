@@ -140,6 +140,11 @@ type Lock<T> = spin::Mutex<T>;
 /// the warnings sit behind a lock: `std::sync::Mutex` with the `std` feature, a spin lock
 /// otherwise. The report is `Send + Sync` either way.
 ///
+/// Besides warnings, the report remembers which `$profiles.{name}` tables the documents
+/// of the load defined ([`record_profile_table`](Self::record_profile_table)), so the
+/// profile-file loader can tell "profile defined in the main file" from "profile defined
+/// nowhere" without reading the main file a second time.
+///
 /// ```
 /// use cgp_config_core::{LoadReport, LoadWarning, Origin};
 ///
@@ -149,10 +154,21 @@ type Lock<T> = spin::Mutex<T>;
 /// let warnings = report.take();
 /// assert_eq!(warnings[0].code(), "config::warn::assumed_version");
 /// assert!(report.is_empty());
+///
+/// report.record_profile_table("prod");
+/// assert!(report.has_profile_table("prod"));
+/// report.clear();
+/// assert!(!report.has_profile_table("prod"));
 /// ```
 #[derive(Default)]
 pub struct LoadReport {
-    warnings: Lock<Vec<LoadWarning>>,
+    state: Lock<ReportState>,
+}
+
+#[derive(Default, Clone, PartialEq)]
+struct ReportState {
+    warnings: Vec<LoadWarning>,
+    profile_tables: Vec<String>,
 }
 
 impl LoadReport {
@@ -162,43 +178,47 @@ impl LoadReport {
         Self::default()
     }
 
-    fn with<R>(&self, f: impl FnOnce(&mut Vec<LoadWarning>) -> R) -> R {
+    fn with<R>(&self, f: impl FnOnce(&mut ReportState) -> R) -> R {
         #[cfg(feature = "std")]
         let mut guard = self
-            .warnings
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         #[cfg(not(feature = "std"))]
-        let mut guard = self.warnings.lock();
+        let mut guard = self.state.lock();
         f(&mut guard)
     }
 
     /// Records a warning.
     pub fn push(&self, warning: LoadWarning) {
-        self.with(|warnings| warnings.push(warning));
+        self.with(|state| state.warnings.push(warning));
     }
 
     /// A copy of the recorded warnings.
     #[must_use]
     pub fn warnings(&self) -> Vec<LoadWarning> {
-        self.with(|warnings| warnings.clone())
+        self.with(|state| state.warnings.clone())
     }
 
     /// Removes and returns the recorded warnings.
     #[must_use]
     pub fn take(&self) -> Vec<LoadWarning> {
-        self.with(core::mem::take)
+        self.with(|state| core::mem::take(&mut state.warnings))
     }
 
-    /// Discards the recorded warnings (a loader does this before each load).
+    /// Discards the recorded warnings and profile tables (a loader does this before each
+    /// load).
     pub fn clear(&self) {
-        self.with(Vec::clear);
+        self.with(|state| {
+            state.warnings.clear();
+            state.profile_tables.clear();
+        });
     }
 
     /// Number of recorded warnings.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.with(|warnings| warnings.len())
+        self.with(|state| state.warnings.len())
     }
 
     /// Whether no warning was recorded.
@@ -206,34 +226,60 @@ impl LoadReport {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Records that a document of this load defined `$profiles.{profile}`.
+    pub fn record_profile_table(&self, profile: &str) {
+        self.with(|state| {
+            if !state.profile_tables.iter().any(|seen| seen == profile) {
+                state.profile_tables.push(profile.into());
+            }
+        });
+    }
+
+    /// Whether a document of this load defined `$profiles.{profile}`.
+    #[must_use]
+    pub fn has_profile_table(&self, profile: &str) -> bool {
+        self.with(|state| state.profile_tables.iter().any(|seen| seen == profile))
+    }
+
+    /// The profile tables recorded by this load, in the order they were seen.
+    #[must_use]
+    pub fn profile_tables(&self) -> Vec<String> {
+        self.with(|state| state.profile_tables.clone())
+    }
 }
 
 impl Clone for LoadReport {
     fn clone(&self) -> Self {
         Self {
-            warnings: Lock::new(self.warnings()),
+            state: Lock::new(self.with(|state| state.clone())),
         }
     }
 }
 
 impl fmt::Debug for LoadReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = self.with(|state| state.clone());
         f.debug_struct("LoadReport")
-            .field("warnings", &self.warnings())
+            .field("warnings", &state.warnings)
+            .field("profile_tables", &state.profile_tables)
             .finish()
     }
 }
 
 impl PartialEq for LoadReport {
     fn eq(&self, other: &Self) -> bool {
-        self.warnings() == other.warnings()
+        self.with(|state| state.clone()) == other.with(|state| state.clone())
     }
 }
 
 impl From<Vec<LoadWarning>> for LoadReport {
     fn from(warnings: Vec<LoadWarning>) -> Self {
         Self {
-            warnings: Lock::new(warnings),
+            state: Lock::new(ReportState {
+                warnings,
+                profile_tables: Vec::new(),
+            }),
         }
     }
 }

@@ -113,26 +113,49 @@ pub enum NestedShape {
 /// A nested section: its shape and its metadata.
 ///
 /// The metadata is reached through a function pointer so recursive types do not make the
-/// constants cyclic.
+/// constants cyclic. A [`Single`](NestedShape::Single) section (flattened or not) can
+/// never contain itself (the type would have an infinite size), so the derive also stores
+/// a direct reference to its metadata ([`section_ref`](Self::section_ref)). That
+/// reference is what lets the compile-time key check ([`ConfigMeta::checked`]) walk
+/// flattened and single nested sections: a `const fn` cannot call a function pointer.
 #[derive(Clone, Copy)]
 pub struct NestedMeta {
     /// How the parent holds the section.
     pub shape: NestedShape,
     /// The section's metadata.
     pub meta: fn() -> &'static ConfigMeta,
+    /// The same metadata as a direct reference, when the section cannot be recursive
+    /// (single sections). `None` for lists, maps, and hand-written metadata that does not
+    /// set it.
+    pub section_ref: Option<&'static ConfigMeta>,
 }
 
 impl NestedMeta {
     /// A nested section.
     #[must_use]
     pub const fn new(shape: NestedShape, meta: fn() -> &'static ConfigMeta) -> Self {
-        Self { shape, meta }
+        Self {
+            shape,
+            meta,
+            section_ref: None,
+        }
+    }
+
+    /// Sets [`section_ref`](Self::section_ref). Only for sections that do not contain
+    /// their parent (a cycle of direct references does not compile).
+    #[must_use]
+    pub const fn with_section_ref(mut self, section: &'static ConfigMeta) -> Self {
+        self.section_ref = Some(section);
+        self
     }
 
     /// The section's metadata.
     #[must_use]
     pub fn section(&self) -> &'static ConfigMeta {
-        (self.meta)()
+        match self.section_ref {
+            Some(section) => section,
+            None => (self.meta)(),
+        }
     }
 }
 

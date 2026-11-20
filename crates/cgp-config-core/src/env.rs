@@ -4,8 +4,7 @@
 //! provider that needs a variable reads the snapshot through [`HasEnvSnapshot`], so tests
 //! build a snapshot by hand and stay hermetic and parallel.
 
-use alloc::collections::BTreeMap;
-use alloc::collections::btree_map;
+use alloc::collections::{BTreeMap, btree_map};
 use alloc::string::String;
 use core::fmt;
 

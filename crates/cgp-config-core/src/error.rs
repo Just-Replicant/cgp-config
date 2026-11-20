@@ -118,6 +118,9 @@ pub enum ConfigError {
         path: KeyPath,
         /// Provenance of the second occurrence.
         meta: Box<Meta>,
+        /// Provenance of the first occurrence, when the parser (or the pass that found
+        /// the clash) can point at it.
+        first: Option<Box<Meta>>,
     },
     /// Two layers disagree on the shape of a node (a map over a scalar, an array over a
     /// map, ...). Never a silent replacement.
@@ -283,12 +286,31 @@ impl ConfigError {
         }
     }
 
-    /// A duplicate key at `path`.
+    /// A duplicate key at `path`; `meta` is the second occurrence.
     #[must_use]
     pub fn duplicate_key(path: impl Into<KeyPath>, meta: Meta) -> Self {
         Self::DuplicateKey {
             path: path.into(),
             meta: Box::new(meta),
+            first: None,
+        }
+    }
+
+    /// A duplicate key at `path` with both occurrences.
+    ///
+    /// ```
+    /// use cgp_config_core::{ConfigError, Meta, Origin, Span};
+    ///
+    /// let at = |line| Meta::new(Origin::file("app.toml")).with_span(Span::new(0, 1, line, 1));
+    /// let error = ConfigError::duplicate_key_with_first("port", at(3), at(1));
+    /// assert_eq!(error.to_string(), "duplicate key port at app.toml:3:1 (first at app.toml:1:1)");
+    /// ```
+    #[must_use]
+    pub fn duplicate_key_with_first(path: impl Into<KeyPath>, meta: Meta, first: Meta) -> Self {
+        Self::DuplicateKey {
+            path: path.into(),
+            meta: Box::new(meta),
+            first: Some(Box::new(first)),
         }
     }
 
@@ -464,10 +486,13 @@ impl fmt::Display for ConfigError {
                     Ok(())
                 }
             },
-            Self::DuplicateKey { path, meta } => {
+            Self::DuplicateKey { path, meta, first } => {
                 write!(f, "duplicate key {path}")?;
                 if !meta.origin.is_unknown() {
                     write!(f, " at {}", meta.location())?;
+                }
+                if let Some(first) = first.as_deref().filter(|first| !first.origin.is_unknown()) {
+                    write!(f, " (first at {})", first.location())?;
                 }
                 Ok(())
             }

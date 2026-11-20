@@ -18,8 +18,18 @@ pub trait CanReportWarning {
     /// Records `warning`.
     fn report_warning(&self, warning: LoadWarning);
 
-    /// Discards the warnings of earlier loads. Called once at the start of every load.
+    /// Discards the warnings (and recorded profile tables) of earlier loads. Called once
+    /// at the start of every load.
     fn clear_warnings(&self);
+
+    /// Records that a document of the current load defined `$profiles.{profile}`.
+    /// `PrepareFileLayer` calls it for the active profile; the profile-file loader reads
+    /// it back with [`profile_table_reported`](Self::profile_table_reported).
+    fn report_profile_table(&self, profile: &str);
+
+    /// Whether [`report_profile_table`](Self::report_profile_table) was called for
+    /// `profile` during the current load. A reporter that keeps nothing answers `false`.
+    fn profile_table_reported(&self, profile: &str) -> bool;
 }
 
 /// The warnings collected on a loader. Implemented automatically for a context with a

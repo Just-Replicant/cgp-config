@@ -20,10 +20,22 @@ where
         self.get_field(PhantomData::<Symbol!("load_report")>)
             .clear();
     }
+
+    fn report_profile_table(&self, profile: &str) {
+        self.get_field(PhantomData::<Symbol!("load_report")>)
+            .record_profile_table(profile);
+    }
+
+    fn profile_table_reported(&self, profile: &str) -> bool {
+        self.get_field(PhantomData::<Symbol!("load_report")>)
+            .has_profile_table(profile)
+    }
 }
 
 /// Drops every warning, so there is nothing to clear. For contexts without a
-/// `load_report` field.
+/// `load_report` field. It keeps no profile tables either, so a profile-file loader on
+/// such a context cannot see `$profiles` tables (its `MissingProfile` warning is dropped
+/// anyway).
 pub struct IgnoreWarnings;
 
 #[cgp_impl(IgnoreWarnings: LoadReportComponent)]
@@ -31,4 +43,10 @@ impl WarningReporter {
     fn report_warning(&self, _warning: LoadWarning) {}
 
     fn clear_warnings(&self) {}
+
+    fn report_profile_table(&self, _profile: &str) {}
+
+    fn profile_table_reported(&self, _profile: &str) -> bool {
+        false
+    }
 }
