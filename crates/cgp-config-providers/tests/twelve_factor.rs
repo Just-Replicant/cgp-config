@@ -103,7 +103,7 @@ fn layers_apply_in_order() {
         "name = \"prod\"\n[http]\ntimeout = \"1m\"\n",
     );
 
-    let loader = StdLoader::for_section::<App>(boot(dir.path(), &[]).finish());
+    let loader = StdLoader::for_section::<App>(boot(dir.path(), &[]).finish()).unwrap();
     let config: App = loader.load_config().unwrap();
     assert_eq!(
         config,
@@ -117,7 +117,7 @@ fn layers_apply_in_order() {
     );
 
     let env = [("APP_PROFILE", "prod"), ("APP__HTTP__PORT", "2000")];
-    let loader = StdLoader::for_section::<App>(boot(dir.path(), &env).finish());
+    let loader = StdLoader::for_section::<App>(boot(dir.path(), &env).finish()).unwrap();
     let config: App = loader.load_config().unwrap();
     assert_eq!(config.name, "prod");
     assert_eq!(config.http.port, 2000);
@@ -137,16 +137,17 @@ fn layers_apply_in_order() {
 fn no_file_runs_on_env_and_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let env = [("APP__NAME", "envonly"), ("PORT", "7000")];
-    let loader = StdLoader::for_section::<App>(boot(dir.path(), &env).finish());
+    let loader = StdLoader::for_section::<App>(boot(dir.path(), &env).finish()).unwrap();
     let config: App = loader.load_config().unwrap();
     assert_eq!(config.name, "envonly");
     assert_eq!(config.http.port, 7000, "env_raw PORT");
 
-    let loader = StdLoader::for_section::<App>(boot(dir.path(), &[]).finish());
+    let loader = StdLoader::for_section::<App>(boot(dir.path(), &[]).finish()).unwrap();
     let error = loader.load::<App>().unwrap_err();
     assert!(error.to_string().contains("name"), "{error}");
 
-    let loader = StdLoader::for_section::<App>(boot(dir.path(), &[]).require_file(true).finish());
+    let loader =
+        StdLoader::for_section::<App>(boot(dir.path(), &[]).require_file(true).finish()).unwrap();
     let error = loader.load::<App>().unwrap_err();
     assert_eq!(error.code(), "config::missing");
     assert!(
@@ -161,12 +162,14 @@ fn explicit_file_is_required_and_errors_carry_positions() {
     let missing = dir.path().join("nope.toml");
     let env = [("APP_CONFIG", missing.to_str().unwrap())];
     let error = StdLoader::for_section::<App>(boot(dir.path(), &env).finish())
+        .unwrap()
         .load::<App>()
         .unwrap_err();
     assert_eq!(error.code(), "config::missing");
 
     let bad = write(dir.path(), "bad.toml", "name = \"x\"\n[http]\nport = = 1\n");
     let error = StdLoader::for_section::<App>(boot(dir.path(), &[]).config_path(&bad).finish())
+        .unwrap()
         .load::<App>()
         .unwrap_err();
     let text = error.to_string();
@@ -178,6 +181,7 @@ fn explicit_file_is_required_and_errors_carry_positions() {
         "{\"name\": \"x\",\n \"name\": \"y\"}",
     );
     let error = StdLoader::for_section::<App>(boot(dir.path(), &[]).config_path(&bad).finish())
+        .unwrap()
         .load::<App>();
     #[cfg(feature = "json")]
     assert_eq!(error.unwrap_err().code(), "config::duplicate_key");
@@ -194,10 +198,12 @@ fn profiles_table_and_missing_profile_warning() {
         "name = \"base\"\n[\"$profiles\".staging]\nname = \"staging\"\n",
     );
     let loader =
-        StdLoader::for_section::<App>(boot(dir.path(), &[("APP_PROFILE", "staging")]).finish());
+        StdLoader::for_section::<App>(boot(dir.path(), &[("APP_PROFILE", "staging")]).finish())
+            .unwrap();
     assert_eq!(loader.load::<App>().unwrap().name, "staging");
 
-    let loader = StdLoader::for_section::<App>(boot(dir.path(), &[("APP_PROFILE", "qa")]).finish());
+    let loader =
+        StdLoader::for_section::<App>(boot(dir.path(), &[("APP_PROFILE", "qa")]).finish()).unwrap();
     assert_eq!(loader.load::<App>().unwrap().name, "base");
     let warnings = loader.load_report.warnings();
     assert!(

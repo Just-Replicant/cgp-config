@@ -15,7 +15,7 @@ use cgp_config_core::markers::{ConfigDir, ConfigFile, Embedded, LocalFile, Profi
 use cgp_config_core::{
     CanMergeLayers, CanParseFormat, CanPrepareLayer, CanReportWarning, ConfigError,
     HasActiveProfile, HasConfigValueType, HasLoadLimits, KeyPath, LayerSkipped, LoadWarning,
-    Origin, SourceLoaded, SourceLoader, SourceLoaderComponent, reserved,
+    Origin, SourceLoaded, SourceLoader, SourceLoaderComponent,
 };
 use cgp_config_formats::{FormatKind, parse_document};
 use cgp_config_value::{ConfigValue, Kind};
@@ -56,21 +56,70 @@ pub fn finish_document(
     Ok(tree)
 }
 
-/// Whether the tree holds a secret reference (`{ secret = "scheme:..." }`).
+/// The reference schemes of design plan §6.9 (`env:`, `file:`, `docker:`, and the
+/// satellite `vault:`, `aws:`, `gcp:`).
+pub const SECRET_SCHEMES: &[&str] = &["env", "file", "docker", "vault", "aws", "gcp"];
+
+/// Whether the tree may hold a secret reference, for the "secret in a file others can
+/// read" warning. Deliberately broad (a false positive costs one warning on a file that
+/// is readable by others anyway):
+///
+/// * any table with a `secret` key holding a `scheme:rest` string, whatever other keys
+///   sit beside it (`{ secret = "env:DB", optional = true }` counts);
+/// * any string, at any depth, of the form `{scheme}:{rest}` for a scheme in
+///   [`SECRET_SCHEMES`] (`password = "docker:db"`).
+///
+/// This is a stopgap: phase 4 (secrets) replaces it with the schema (`Secret<T>` fields
+/// and `#[config(secret)]` paths) and the resolver's own scheme table.
+///
+/// ```
+/// use cgp_config_providers::file::contains_secret_reference;
+/// use cgp_config_value::ConfigValue;
+///
+/// let table = |entries: Vec<(&str, ConfigValue)>| ConfigValue::map(entries);
+/// assert!(contains_secret_reference(&table(vec![(
+///     "db",
+///     table(vec![("secret", "env:DB".into()), ("optional", true.into())]),
+/// )])));
+/// assert!(contains_secret_reference(&table(vec![("password", "docker:db".into())])));
+/// assert!(!contains_secret_reference(&table(vec![("url", "https://x".into())])));
+/// assert!(!contains_secret_reference(&table(vec![("secret", "plain".into())])));
+/// ```
 #[must_use]
 pub fn contains_secret_reference(value: &ConfigValue) -> bool {
     match value.kind() {
         Kind::Map(map) => {
-            let is_reference = map.len() == 1
-                && map
-                    .get("secret")
-                    .and_then(ConfigValue::as_str)
-                    .is_some_and(|reference| reference.contains(':'));
-            is_reference || map.values().any(contains_secret_reference)
+            let tagged = map
+                .get("secret")
+                .and_then(ConfigValue::as_str)
+                .is_some_and(looks_like_reference);
+            tagged || map.values().any(contains_secret_reference)
         }
         Kind::Array(elements) => elements.iter().any(contains_secret_reference),
+        Kind::String(text) => has_known_scheme(text),
         _ => false,
     }
+}
+
+/// `scheme:rest`: an ASCII scheme (a letter, then letters, digits, `+`, `-`, `.`) and a
+/// non-empty rest.
+fn looks_like_reference(text: &str) -> bool {
+    let Some((scheme, rest)) = text.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && !rest.is_empty()
+}
+
+fn has_known_scheme(text: &str) -> bool {
+    text.split_once(':').is_some_and(|(scheme, rest)| {
+        !rest.is_empty()
+            && SECRET_SCHEMES
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(scheme))
+    })
 }
 
 /// The `ConfigError::Missing` of a required file.
@@ -231,8 +280,10 @@ where
 /// Loads `ProfileFile`: `{stem}.{profile}.{ext}` beside the main file, optional.
 ///
 /// When the active profile is not `default` and neither this file nor a
-/// `$profiles.{profile}` table in the main file exists, records
-/// `LoadWarning::MissingProfile`.
+/// `$profiles.{profile}` table in an earlier document exists, records
+/// `LoadWarning::MissingProfile`. The table is known from the load report
+/// (`CanReportWarning::profile_table_reported`, recorded by `PrepareFileLayer`), so the
+/// main file is read once per load.
 pub struct LoadProfileFile;
 
 #[cgp_impl(LoadProfileFile)]
@@ -252,43 +303,80 @@ where
         &self,
         _source: PhantomData<ProfileFile>,
     ) -> Result<Option<Self::ConfigValue>, Self::Error> {
-        let profile = self.active_profile();
-        let location = self.config_location();
-        let Some(path) = location.sibling(profile) else {
-            if profile != "default" {
-                self.report_warning(LoadWarning::MissingProfile {
-                    profile: profile.into(),
-                });
-            }
-            return Ok(None);
-        };
-        let layer = load_path(self, &path, false, &[], |context, origin, text| {
-            parse_by_extension(context, origin, text, &path)
-        })?;
-        if layer.is_none() && profile != "default" && !main_file_has_profile(self, profile)? {
+        let (layer, defined) = load_profile_file(self)?;
+        if !defined {
             self.report_warning(LoadWarning::MissingProfile {
-                profile: profile.into(),
+                profile: self.active_profile().into(),
             });
         }
         Ok(layer)
     }
 }
 
-/// Whether the main file defines `$profiles.{profile}`.
-fn main_file_has_profile<Context>(context: &Context, profile: &str) -> Result<bool, Context::Error>
+/// Loads `ProfileFile` like [`LoadProfileFile`], but an active profile (other than
+/// `default`) with neither a profile file nor a `$profiles.{profile}` table is
+/// `ConfigError::MissingProfile` instead of a warning (`StrictPreset`, design plan
+/// §6.15).
+///
+/// The table is known from the load report, so the context must keep it
+/// (`ReportOnLoader`, the preset default); with `IgnoreWarnings` only a profile file
+/// counts.
+pub struct RequireActiveProfile;
+
+#[cgp_impl(RequireActiveProfile)]
+impl SourceLoader<ProfileFile>
 where
-    Context: CanReadConfigFile + HasConfigLocation + HasLoadLimits + CanRaiseError<ConfigError>,
+    Self: HasConfigValueType<ConfigValue = ConfigValue>
+        + HasActiveProfile
+        + CanReadConfigFile
+        + HasConfigLocation
+        + HasLoadLimits
+        + CanRaiseError<ConfigError>
+        + CanReportWarning
+        + CanLog<SourceLoaded>
+        + CanLog<LayerSkipped>,
 {
-    let Some(path) = context.config_location().file.as_deref() else {
-        return Ok(false);
+    fn load_source(
+        &self,
+        _source: PhantomData<ProfileFile>,
+    ) -> Result<Option<Self::ConfigValue>, Self::Error> {
+        let (layer, defined) = load_profile_file(self)?;
+        if !defined {
+            return Err(Self::raise_error(ConfigError::MissingProfile {
+                profile: self.active_profile().into(),
+            }));
+        }
+        Ok(layer)
+    }
+}
+
+/// The profile file (when present) and whether the active profile is defined anywhere.
+fn load_profile_file<Context>(
+    context: &Context,
+) -> Result<(Option<ConfigValue>, bool), Context::Error>
+where
+    Context: HasConfigValueType<ConfigValue = ConfigValue>
+        + HasActiveProfile
+        + CanReadConfigFile
+        + HasConfigLocation
+        + HasLoadLimits
+        + CanRaiseError<ConfigError>
+        + CanReportWarning
+        + CanLog<SourceLoaded>
+        + CanLog<LayerSkipped>,
+{
+    let profile = context.active_profile();
+    let defined_elsewhere = profile == "default" || context.profile_table_reported(profile);
+    let Some(path) = context.config_location().sibling(profile) else {
+        return Ok((None, defined_elsewhere));
     };
-    let Some(file) = context.read_config_file(path)? else {
-        return Ok(false);
-    };
-    let tree = parse_by_extension(context, &file.origin, &file.text, path)?;
-    Ok(tree
-        .get(reserved::PROFILES)
-        .is_some_and(|profiles| profiles.get(profile).is_some()))
+    let layer = load_path(context, &path, false, &[], |context, origin, text| {
+        parse_by_extension(context, origin, text, &path)
+    })?;
+    // `PrepareFileLayer` recorded a `$profiles.{profile}` table while preparing the main
+    // file (an earlier layer), so the main file is not read again here.
+    let defined = layer.is_some() || defined_elsewhere;
+    Ok((layer, defined))
 }
 
 /// Loads `LocalFile`: `{stem}.local.{ext}` beside the main file (developer overrides,

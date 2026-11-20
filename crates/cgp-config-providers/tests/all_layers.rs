@@ -13,6 +13,7 @@ use cgp_config_core::{
     ValidateSections, nested,
 };
 use cgp_config_providers::bootstrap::Bootstrap;
+use cgp_config_providers::layers::TwelveFactorDotenvCliLayers;
 use cgp_config_providers::location::SearchPath;
 use cgp_fork::prelude::*;
 use serde::Deserialize;
@@ -139,6 +140,7 @@ fn dotenv_env_and_cli_in_order() {
     let boot = Bootstrap::new("app")
         .with_env(EnvSnapshot::from_iter([("APP__HTTP__PORT", "4000")]))
         .search(SearchPath::new("app").with_working_dir(Some("/srv".into())))
+        .layers::<TwelveFactorDotenvCliLayers>()
         .from_args(["--set", "http.port=5000"])
         .unwrap()
         .finish_with(exists);
@@ -150,6 +152,7 @@ fn dotenv_env_and_cli_in_order() {
     // All validation problems arrive together.
     let boot = Bootstrap::new("app")
         .search(SearchPath::new("app").with_working_dir(Some("/srv".into())))
+        .layers::<TwelveFactorDotenvCliLayers>()
         .from_args(["--set", "http.port=80", "--set", "name="])
         .unwrap()
         .finish_with(exists);

@@ -128,3 +128,44 @@ fn collisions_are_ambiguous() {
     };
     assert_eq!(candidates.len(), 2);
 }
+
+#[test]
+fn segments_fold_to_snake_case() {
+    const META: &ConfigMeta = &ConfigMeta::new(
+        "Db",
+        &[
+            FieldMeta::new("max_connections", "max_connections"),
+            FieldMeta::new("idle_timeout", "idleTimeout"),
+            FieldMeta::new("tls_cert", "tls-cert"),
+        ],
+    );
+    fn db() -> &'static ConfigMeta {
+        META
+    }
+    for name in [
+        "APP__MaxConnections",
+        "APP__maxConnections",
+        "APP__MAX_CONNECTIONS",
+        "APP__max_connections",
+    ] {
+        let env = EnvSnapshot::from_iter([(name, "8")]);
+        let tree = env_layer(&env, "APP", Some(db())).unwrap().unwrap();
+        assert_eq!(
+            get(&tree, "max_connections").as_deref(),
+            Some("8"),
+            "{name}"
+        );
+    }
+    for name in ["APP__IDLE_TIMEOUT", "APP__IdleTimeout", "APP__IDLETIMEOUT"] {
+        let env = EnvSnapshot::from_iter([(name, "1s")]);
+        let tree = env_layer(&env, "APP", Some(db())).unwrap().unwrap();
+        assert_eq!(get(&tree, "idleTimeout").as_deref(), Some("1s"), "{name}");
+    }
+    let env = EnvSnapshot::from_iter([("APP__TlsCert", "x")]);
+    let tree = env_layer(&env, "APP", Some(db())).unwrap().unwrap();
+    assert_eq!(get(&tree, "tls-cert").as_deref(), Some("x"));
+    // Without a schema (or past it) segments still fold.
+    let env = EnvSnapshot::from_iter([("APP__HttpServer__MaxBody", "1")]);
+    let tree = env_layer(&env, "APP", None).unwrap().unwrap();
+    assert_eq!(get(&tree, "http_server.max_body").as_deref(), Some("1"));
+}

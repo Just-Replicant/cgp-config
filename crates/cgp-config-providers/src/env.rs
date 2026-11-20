@@ -4,12 +4,17 @@
 //!
 //! * only names starting with `{PREFIX}__` are read (bootstrap keys `{PREFIX}_CONFIG`,
 //!   `{PREFIX}_PROFILE`, `{PREFIX}_DOCUMENT` use one underscore and are never fields);
-//! * the rest splits on `__`; each segment folds to lowercase snake case;
-//! * with a root schema, a segment matches a field's document key (ASCII
-//!   case-insensitively, so camelCase file keys work), or its `#[config(env = "...")]`
-//!   name; fields of flattened sections answer on the parent; the segment after a map
-//!   section is the (lowercased) map key. A segment that matches two keys differing only
-//!   by case is `ConfigError::AmbiguousEnv`;
+//! * the rest splits on `__` (the separator is fixed: there is no single-`_` mode, see
+//!   below); each segment folds to lowercase snake case (`cgp_config_core::env_fold`:
+//!   `MaxConnections`, `MAX_CONNECTIONS`, and `max-connections` all fold to
+//!   `max_connections`);
+//! * with a root schema, a segment matches a field's document key when the two are equal
+//!   ignoring ASCII case and `-`/`_` (so `APP__MAXCONNECTIONS` reads `maxConnections`) or
+//!   when their snake-case folds are equal (so `APP__MaxConnections` reads
+//!   `max_connections`), or its `#[config(env = "...")]` name; fields of flattened
+//!   sections answer on the parent; the segment after a map section is the (folded) map
+//!   key. A segment that matches two fields is `ConfigError::AmbiguousEnv` (the derive
+//!   rejects such field sets at compile time, `ConfigMeta::checked`);
 //! * `#[config(env_raw = "PORT")]` reads the exact, unprefixed name; a prefixed variable
 //!   for the same field wins over it;
 //! * values stay **strings**; the deserializer parses them by target type (lists as JSON
@@ -18,6 +23,12 @@
 //!   `ConfigError::AmbiguousEnv`;
 //! * with a schema, the layer is canonical: serde keys, and flattened fields under their
 //!   section's field (`APP__LOG_LEVEL` → `common.log_level`).
+//!
+//! **`LossyUnderscore` is not available.** The design plan (§6.3) allows a context to
+//! opt into a single `_` separator resolved against the schema. This release does not
+//! ship it: the separator is always [`SEPARATOR`] (`__`), and `APP_HTTP_PORT` is not
+//! read. A single-underscore name would need the schema to pick a split, and the
+//! double-underscore form is unambiguous without one.
 
 use std::sync::Arc;
 
@@ -25,7 +36,7 @@ use cgp_config_core::markers::EnvVars;
 use cgp_config_core::{
     CanReportWarning, ConfigError, ConfigMeta, EnvSnapshot, FieldMeta, HasConfigValueType,
     HasEnvPrefix, HasEnvSnapshot, HasLoadLimits, HasRootConfigMeta, KeyPath, LayerSkipped,
-    NestedShape, Origin, PathSegment, SourceLoaded, SourceLoader, SourceLoaderComponent,
+    NestedShape, Origin, PathSegment, SourceLoaded, SourceLoader, SourceLoaderComponent, env_fold,
 };
 use cgp_config_value::merge::{MergeOptions, merge};
 use cgp_config_value::schema::canonicalize;
@@ -196,13 +207,7 @@ fn visible_fields(meta: &'static ConfigMeta, out: &mut Vec<&'static FieldMeta>, 
 fn field_matches(field: &FieldMeta, segment: &str) -> bool {
     match field.env {
         Some(env) => env.eq_ignore_ascii_case(segment),
-        None => {
-            field.doc_key.eq_ignore_ascii_case(segment)
-                || field
-                    .doc_key
-                    .replace('-', "_")
-                    .eq_ignore_ascii_case(segment)
-        }
+        None => env_fold::matches(field.doc_key, segment),
     }
 }
 
@@ -214,9 +219,9 @@ fn key_path(segments: &[Arc<str>]) -> KeyPath {
     )
 }
 
-/// Lowercase snake case of an env segment.
+/// Lowercase snake case of an env segment (`MaxConnections` → `max_connections`).
 fn fold(segment: &str) -> Arc<str> {
-    Arc::from(segment.to_ascii_lowercase())
+    Arc::from(env_fold::fold(segment))
 }
 
 fn insert(

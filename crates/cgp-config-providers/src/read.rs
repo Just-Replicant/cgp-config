@@ -101,8 +101,16 @@ fn io_error(origin: &Origin, error: &std::io::Error) -> ConfigError {
 ///
 /// * at most `max_bytes` (`LimitExceeded` past it, checked on the open file, so a growing
 ///   file cannot exceed it either);
-/// * a torn read (the length or modification time changed while reading) is retried once,
-///   then is `ConfigError::Io`;
+/// * a torn read (the file's length changed while reading, or differs from the bytes
+///   read) is retried once, then is `ConfigError::Io`. The modification time alone does
+///   not count: a coarse or touched mtime (`touch`, editors that rewrite identical
+///   content, filesystems with second resolution) said nothing about the bytes read and
+///   only caused spurious failures;
+/// * `conf.d` listings ([`ConfigFileReader::list_config_dir`]) keep regular files, and
+///   symlinks only when they resolve to a regular file **inside** the same directory
+///   (resolved with `canonicalize`); a dangling link, a link to a directory, or a link
+///   that leaves `conf.d` is skipped, so a drop-in directory cannot pull in arbitrary
+///   files;
 /// * on Unix, a group- or world-writable file records `LoadWarning::WorldWritable`, and
 ///   [`FileText::readable_by_others`] is set from the mode.
 pub struct ReadStdFile;
@@ -149,21 +157,39 @@ where
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(Self::raise_error(io_error(&origin, &error))),
         };
+        let canonical_dir = std::fs::canonicalize(dir)
+            .map_err(|error| Self::raise_error(io_error(&origin, &error)))?;
         let mut files = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|error| Self::raise_error(io_error(&origin, &error)))?;
-            let is_file = entry
+            let file_type = entry
                 .file_type()
-                .map_err(|error| Self::raise_error(io_error(&origin, &error)))?
-                .is_file()
-                || std::fs::metadata(entry.path()).is_ok_and(|meta| meta.is_file());
-            if is_file {
+                .map_err(|error| Self::raise_error(io_error(&origin, &error)))?;
+            let keep = if file_type.is_symlink() {
+                symlink_inside(&entry.path(), &canonical_dir)
+            } else {
+                file_type.is_file()
+            };
+            if keep {
                 files.push(entry.path());
             }
         }
         files.sort();
         Ok(Some(files))
     }
+}
+
+/// Whether the symlink `link` resolves to a regular file inside `canonical_dir`.
+fn symlink_inside(link: &Path, canonical_dir: &Path) -> bool {
+    std::fs::canonicalize(link).is_ok_and(|target| {
+        target.starts_with(canonical_dir) && std::fs::metadata(&target).is_ok_and(|m| m.is_file())
+    })
+}
+
+/// Whether a read is torn: the length changed between the two `stat`s, or the bytes read
+/// do not match it. The modification time is deliberately not compared.
+fn is_torn(before_len: u64, read_len: usize, after_len: u64) -> bool {
+    after_len != before_len || u64::try_from(read_len).ok() != Some(after_len)
 }
 
 enum Read {
@@ -199,10 +225,7 @@ fn read_once(path: &Path, origin: &Origin, max_bytes: usize) -> Result<Read, Con
         return Err(ConfigError::limit_exceeded("max_bytes", max_bytes));
     }
     let after = std::fs::metadata(path).map_err(|error| io_error(origin, &error))?;
-    let changed = after.len() != before.len()
-        || u64::try_from(text.len()).ok() != Some(after.len())
-        || after.modified().ok() != before.modified().ok();
-    if changed {
+    if is_torn(before.len(), text.len(), after.len()) {
         drop(Zeroizing::new(text));
         return Ok(Read::Torn);
     }
@@ -304,7 +327,57 @@ where
 mod tests {
     use cgp_config_core::Origin;
 
-    use super::{decode, mode_flags};
+    use super::{decode, is_torn, mode_flags};
+
+    #[test]
+    fn only_a_length_change_is_torn() {
+        assert!(!is_torn(10, 10, 10));
+        assert!(is_torn(10, 10, 12), "grew after the read");
+        assert!(is_torn(10, 8, 10), "short read");
+        assert!(is_torn(10, 12, 12), "grew during the read");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn conf_d_symlinks_must_stay_inside() {
+        use std::os::unix::fs::symlink;
+
+        use cgp_config_core::ConfigError;
+        use cgp_fork::prelude::*;
+
+        use crate::read::{CanReadConfigFile, ConfigFileReaderComponent, ReadStdFile};
+
+        struct Ctx;
+        delegate_components! {
+            #[unchecked]
+            Ctx {
+                cgp_fork::core::error::ErrorTypeProviderComponent: UseType<ConfigError>,
+                cgp_fork::core::error::ErrorRaiserComponent: cgp_fork::extra::error::RaiseFrom,
+                cgp_config_core::LoadLimitsComponent: cgp_config_core::DefaultLoadLimits,
+                cgp_config_core::LoadReportComponent: cgp_config_core::IgnoreWarnings,
+                ConfigFileReaderComponent: ReadStdFile,
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let conf = root.path().join("conf.d");
+        std::fs::create_dir(&conf).unwrap();
+        let outside = root.path().join("outside.toml");
+        std::fs::write(&outside, "a = 1\n").unwrap();
+        std::fs::write(conf.join("10-base.toml"), "b = 1\n").unwrap();
+        std::fs::create_dir(conf.join("sub")).unwrap();
+        symlink(&outside, conf.join("20-escape.toml")).unwrap();
+        symlink(conf.join("10-base.toml"), conf.join("30-alias.toml")).unwrap();
+        symlink(conf.join("missing.toml"), conf.join("40-dangling.toml")).unwrap();
+        symlink(conf.join("sub"), conf.join("50-dir.toml")).unwrap();
+        let ctx = Ctx;
+        let listed = ctx.list_config_dir(&conf).unwrap().unwrap();
+        let names: Vec<_> = listed
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["10-base.toml", "30-alias.toml"]);
+    }
 
     #[test]
     fn decoding_rules() {

@@ -99,10 +99,43 @@ pub trait HasConfigLocation {
     fn config_location(&self) -> &ConfigLocation;
 }
 
+/// The first directory of a `CONFIGURATION_DIRECTORY` value. systemd (Unix only) joins
+/// several directories with `:`, so `unix_list` splits there and skips empty entries;
+/// with `unix_list` false (any other platform) the whole value is one path, which keeps
+/// `C:\\ProgramData\\svc` intact.
+///
+/// ```
+/// use std::path::PathBuf;
+/// use cgp_config_providers::location::first_configuration_directory;
+///
+/// assert_eq!(
+///     first_configuration_directory(":/etc/svc:/etc/other", true),
+///     Some(PathBuf::from("/etc/svc"))
+/// );
+/// assert_eq!(
+///     first_configuration_directory(r"C:\ProgramData\svc", false),
+///     Some(PathBuf::from(r"C:\ProgramData\svc"))
+/// );
+/// assert_eq!(first_configuration_directory("", false), None);
+/// ```
+#[must_use]
+pub fn first_configuration_directory(value: &str, unix_list: bool) -> Option<PathBuf> {
+    if unix_list {
+        value
+            .split(':')
+            .find(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+    } else {
+        (!value.is_empty()).then(|| PathBuf::from(value))
+    }
+}
+
 /// The search order for the main config file (design plan §6.3):
 ///
 /// 1. `{CONFIGURATION_DIRECTORY}/{app}.{ext}` when systemd set `CONFIGURATION_DIRECTORY`
-///    (only its first entry, as systemd lists several separated by `:`);
+///    (only its first entry: on Unix systemd lists several separated by `:`; elsewhere
+///    the value is one path, so a Windows `C:\\…` is not split at its drive colon, see
+///    [`first_configuration_directory`]);
 /// 2. `./{app}.{ext}`, `./config.{ext}`, `./config/{app}.{ext}` in the working directory;
 /// 3. the same three names in the directory of the executable;
 /// 4. `{project_config_dir}/{app}.{ext}` (`directories::ProjectDirs`).
@@ -138,8 +171,7 @@ impl SearchPath {
         Self {
             configuration_directory: env
                 .get("CONFIGURATION_DIRECTORY")
-                .and_then(|dirs| dirs.split(':').find(|dir| !dir.is_empty()))
-                .map(PathBuf::from),
+                .and_then(|dirs| first_configuration_directory(dirs, cfg!(unix))),
             working_dir: std::env::current_dir().ok(),
             exe_dir: std::env::current_exe()
                 .ok()
