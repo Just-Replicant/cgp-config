@@ -67,6 +67,27 @@ fn emits_meta_and_validation() {
         assert!(out.contains(expected), "missing `{expected}` in\n{out}");
     }
     assert!(!out.contains("\"cache\""), "skipped fields are absent");
+    assert!(
+        out.contains("ConfigMeta :: checked (&"),
+        "META runs the compile-time key check:\n{out}"
+    );
+    assert!(
+        out.contains("with_section_ref (< Db as __cgp :: ConfigSection > :: META)"),
+        "single sections carry a direct reference:\n{out}"
+    );
+    assert!(out.contains("with_section_ref (< Common as __cgp :: ConfigSection > :: META)"));
+    assert!(
+        !out.contains("with_section_ref (< Server"),
+        "lists stay behind a fn pointer"
+    );
+    assert!(
+        !out.contains("with_section_ref (< Pool"),
+        "maps stay behind a fn pointer"
+    );
+    assert!(
+        !out.contains("const _ : & 'static __cgp :: ConfigMeta"),
+        "a generic section is checked on first use, not at its declaration"
+    );
     let name_meta = out.split("FieldMeta :: new (\"name\"").nth(1).unwrap();
     assert!(name_meta.contains("with_required (true)"));
     let port_meta = out

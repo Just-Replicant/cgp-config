@@ -350,7 +350,10 @@ fn any_config_attr(attrs: &FieldAttrs, include_skip: bool) -> Option<Span> {
     spans.into_iter().flatten().next()
 }
 
-/// Document keys, aliases, and env names must not collide within a section.
+/// Document keys, aliases, and env names must not collide within a section. This gives
+/// the best spans for clashes inside one struct; clashes that involve flattened sections
+/// or `env_raw` names of nested sections are found by `ConfigMeta::checked`, which the
+/// generated `META` calls at compile time.
 fn check_unique(fields: &[Field], errors: &mut Errors) {
     let mut keys: Vec<(&str, &Ident)> = Vec::new();
     let mut env_names: Vec<(&str, &str, &Ident)> = Vec::new();

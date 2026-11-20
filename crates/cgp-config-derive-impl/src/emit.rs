@@ -114,10 +114,16 @@ fn field_meta(field: &Field) -> TokenStream {
             Shape::Map => format_ident!("Map"),
         };
         let meta_fn = quote_spanned!(section.span()=> <#section as __cgp::ConfigSection>::meta);
+        // A single section cannot contain its parent (the type would be infinite), so a
+        // direct reference is safe and lets the compile-time key check walk into it.
+        let section_ref = (nested.shape == Shape::Single).then(|| {
+            let meta = quote_spanned!(section.span()=> <#section as __cgp::ConfigSection>::META);
+            quote!(.with_section_ref(#meta))
+        });
         out.extend(quote!(.with_nested(__cgp::NestedMeta::new(
             __cgp::NestedShape::#shape,
             #meta_fn,
-        ))));
+        )#section_ref)));
     }
     if field.required {
         out.extend(quote!(.with_required(true)));
@@ -159,11 +165,19 @@ fn config_section_impl(section: &Section) -> TokenStream {
     if section.deny_unknown {
         meta.extend(quote!(.with_deny_unknown(true)));
     }
+    // Non-generic sections are checked where they are declared; a generic section is
+    // checked when an instantiation's `META` is first used (any load uses it).
+    let force = section.generics.params.is_empty().then(|| {
+        quote! {
+            const _: &'static __cgp::ConfigMeta = <#ident as __cgp::ConfigSection>::META;
+        }
+    });
     quote! {
         #[automatically_derived]
         impl #impl_generics __cgp::ConfigSection for #ident #ty_generics #where_clause {
-            const META: &'static __cgp::ConfigMeta = &#meta;
+            const META: &'static __cgp::ConfigMeta = __cgp::ConfigMeta::checked(&#meta);
         }
+        #force
     }
 }
 
