@@ -227,6 +227,7 @@ pub fn interpolate_tree(
     }
     let mut expander = Expander {
         tree: &tree,
+        meta,
         env,
         limits,
         opted_in: targets.iter().cloned().collect(),
@@ -358,6 +359,7 @@ enum State {
 
 struct Expander<'a> {
     tree: &'a ConfigValue,
+    meta: &'static ConfigMeta,
     env: &'a EnvSnapshot,
     limits: &'a LoadLimits,
     opted_in: alloc::collections::BTreeSet<KeyPath>,
@@ -455,6 +457,11 @@ impl Expander<'_> {
         let Ok(target_path) = KeyPath::parse(target) else {
             return Err(interpolate_error(from, "invalid reference path"));
         };
+        // The schema decides, not the node: a `#[config(secret)]` field is refused even
+        // before `normalize` marks its subtree (interpolation runs first).
+        if names_secret(self.meta, &target_path) {
+            return Err(interpolate_error(from, "a reference cannot name a secret"));
+        }
         if self.opted_in.contains(&target_path) {
             if depth + 1 > self.limits.max_interpolation_depth {
                 return Err(ConfigError::limit_exceeded(
@@ -493,6 +500,45 @@ impl Expander<'_> {
             )),
         }
     }
+}
+
+/// Whether `path` (document form) names a `#[config(secret)]` field or something inside
+/// one, following nested sections, flattened sections, aliases, and mounts.
+fn names_secret(meta: &'static ConfigMeta, path: &KeyPath) -> bool {
+    let mut section = meta;
+    let mut segments = path.segments().iter();
+    for _ in 0..=FieldChain::CAPACITY {
+        let Some(segment) = segments.next() else {
+            return false;
+        };
+        let Some(key) = segment.as_key() else {
+            return false;
+        };
+        let field = match section.resolve_doc_key(key) {
+            Some(chain) => {
+                if chain.iter().any(|field| field.secret) {
+                    return true;
+                }
+                chain.target()
+            }
+            None => match section.field(key) {
+                Some(field) => field,
+                None => return false,
+            },
+        };
+        if field.secret {
+            return true;
+        }
+        let Some(nested) = field.nested else {
+            return false;
+        };
+        if !matches!(nested.shape, NestedShape::Single) {
+            // Skip the element index or the map key.
+            segments.next();
+        }
+        section = nested.section();
+    }
+    false
 }
 
 fn interpolate_error(path: &KeyPath, message: &str) -> ConfigError {

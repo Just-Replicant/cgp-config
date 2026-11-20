@@ -104,6 +104,11 @@ impl ConfigMap {
         self.entries.values()
     }
 
+    /// Iterates over the entries mutably, in order, with the shared key.
+    pub fn iter_mut(&mut self) -> impl ExactSizeIterator<Item = (&Arc<str>, &mut ConfigValue)> {
+        self.entries.iter_mut()
+    }
+
     /// Iterates over the values in order, mutably.
     pub fn values_mut(&mut self) -> impl ExactSizeIterator<Item = &mut ConfigValue> {
         self.entries.values_mut()

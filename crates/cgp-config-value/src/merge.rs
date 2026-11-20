@@ -24,6 +24,14 @@
 //! unchanged, data, `Meta`, and allocation (`ConfigValue::ptr_eq` holds). Unchanged subtrees
 //! are moved or shared, never deep-copied.
 //!
+//! An **index patch** (a map flagged `Meta::index_patch`, keys are decimal indices; the
+//! CLI layer writes `--set servers[1].host=b` this way) is applied to the array below it
+//! element by element: index `i` merges into element `i`, the index one past the end
+//! appends, and an index further out is `ConfigError::Type` (an override never invents
+//! the elements in between). With nothing below it, the indices must run from `0`
+//! without gaps. Earlier elements are never dropped and nothing is padded with nulls.
+//! The result of [`merge`] never contains an index patch.
+//!
 //! Recursion is bounded by [`MergeOptions::max_depth`]: the merge stops with
 //! `ConfigError::LimitExceeded` before it descends past that depth, so a hostile or
 //! accidental deep tree cannot overflow the stack.
@@ -169,8 +177,181 @@ pub fn merge(
     overlay: ConfigValue,
     options: &MergeOptions,
 ) -> Result<ConfigValue, ConfigError> {
+    let patches = contains_patch(&overlay, 0, options.max_depth);
     let mut path = KeyPath::root();
-    merge_at(base, overlay, options, &mut path, 0)
+    let merged = merge_at(base, overlay, options, &mut path, 0)?;
+    if patches {
+        let mut merged = merged;
+        materialize(&mut merged, &mut KeyPath::root(), 0, options.max_depth)?;
+        Ok(merged)
+    } else {
+        Ok(merged)
+    }
+}
+
+/// [`merge`] that leaves index patches in the result, to combine several patches into one
+/// layer (the CLI layer is built this way). Merge the combined layer with [`merge`].
+///
+/// # Errors
+///
+/// As [`merge`].
+pub fn merge_keeping_patches(
+    base: ConfigValue,
+    overlay: ConfigValue,
+    options: &MergeOptions,
+) -> Result<ConfigValue, ConfigError> {
+    merge_at(base, overlay, options, &mut KeyPath::root(), 0)
+}
+
+/// Whether `value` is an index patch (see the [module docs](self)).
+#[must_use]
+pub fn is_index_patch(value: &ConfigValue) -> bool {
+    value.meta().index_patch && value.is_map()
+}
+
+fn contains_patch(value: &ConfigValue, level: usize, max_depth: usize) -> bool {
+    if level > max_depth {
+        return false;
+    }
+    if is_index_patch(value) {
+        return true;
+    }
+    match value.kind() {
+        Kind::Map(map) => map
+            .values()
+            .any(|child| contains_patch(child, level + 1, max_depth)),
+        Kind::Array(elements) => elements
+            .iter()
+            .any(|child| contains_patch(child, level + 1, max_depth)),
+        _ => false,
+    }
+}
+
+/// The index of a patch key.
+fn patch_index(key: &str, path: &KeyPath, meta: &Meta) -> Result<usize, ConfigError> {
+    key.parse::<usize>().map_err(|_| {
+        ConfigError::type_error(
+            path.clone(),
+            alloc::format!("`{key}` is not an array index"),
+            Some(meta.clone()),
+        )
+    })
+}
+
+/// The entries of a patch, sorted by index.
+fn patch_entries(
+    patch: ConfigMap,
+    path: &KeyPath,
+    meta: &Meta,
+) -> Result<Vec<(usize, ConfigValue)>, ConfigError> {
+    let mut entries = Vec::with_capacity(patch.len());
+    for (key, value) in patch {
+        entries.push((patch_index(&key, path, meta)?, value));
+    }
+    entries.sort_by_key(|(index, _)| *index);
+    Ok(entries)
+}
+
+fn index_past_end(path: &KeyPath, index: usize, len: usize, meta: &Meta) -> ConfigError {
+    ConfigError::type_error(
+        path.join(index),
+        alloc::format!(
+            "array index {index} is past the end of the array ({len} element{}); an override \
+             can change an element or append the next one",
+            if len == 1 { "" } else { "s" }
+        ),
+        Some(meta.clone()),
+    )
+}
+
+/// Turns every index patch left in `value` (one with nothing below it) into an array.
+fn materialize(
+    value: &mut ConfigValue,
+    path: &mut KeyPath,
+    level: usize,
+    max_depth: usize,
+) -> Result<(), ConfigError> {
+    if level > max_depth {
+        return Err(ConfigError::limit_exceeded("max_depth", max_depth));
+    }
+    if !contains_patch(value, level, max_depth) {
+        return Ok(());
+    }
+    if is_index_patch(value) {
+        let taken = core::mem::replace(value, ConfigValue::null());
+        let (map, mut meta) = into_map(taken);
+        meta.index_patch = false;
+        let entries = patch_entries(map, path, &meta)?;
+        let mut elements = Vec::with_capacity(entries.len());
+        for (index, element) in entries {
+            if index != elements.len() {
+                return Err(index_past_end(path, index, elements.len(), &meta));
+            }
+            elements.push(element);
+        }
+        *value = ConfigValue::new(Kind::Array(elements), meta);
+    }
+    match value.kind_mut() {
+        Kind::Map(map) => {
+            for (key, child) in map.iter_mut() {
+                path.push(key.clone());
+                let result = materialize(child, path, level + 1, max_depth);
+                path.pop();
+                result?;
+            }
+        }
+        Kind::Array(elements) => {
+            for (index, child) in elements.iter_mut().enumerate() {
+                path.push(index);
+                let result = materialize(child, path, level + 1, max_depth);
+                path.pop();
+                result?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Applies the index patch `overlay` onto `base`.
+fn apply_patch(
+    base: ConfigValue,
+    overlay: ConfigValue,
+    options: &MergeOptions,
+    path: &mut KeyPath,
+    level: usize,
+) -> Result<ConfigValue, ConfigError> {
+    match base.kind() {
+        Kind::Array(_) => {
+            let (mut elements, base_meta) = into_array(base);
+            let (patch, patch_meta) = into_map(overlay);
+            for (index, element) in patch_entries(patch, path, &patch_meta)? {
+                if index < elements.len() {
+                    path.push(index);
+                    let lower = core::mem::replace(&mut elements[index], ConfigValue::null());
+                    let merged = merge_at(lower, element, options, path, level + 1);
+                    path.pop();
+                    elements[index] = merged?;
+                } else if index == elements.len() {
+                    elements.push(element);
+                } else {
+                    return Err(index_past_end(path, index, elements.len(), &patch_meta));
+                }
+            }
+            Ok(ConfigValue::new(Kind::Array(elements), base_meta))
+        }
+        // Two patches (one layer built from several overrides): merge their indices.
+        Kind::Map(_) if is_index_patch(&base) => merge_maps(base, overlay, options, path, level),
+        // Nothing below: the patch stands for the array (checked by `materialize`).
+        Kind::Null => Ok(pick(base, overlay, options)),
+        _ => Err(ConfigError::MergeConflict {
+            path: path.clone(),
+            base: base.meta().origin.clone(),
+            overlay: overlay.meta().origin.clone(),
+            base_kind: base.kind_name(),
+            overlay_kind: "array",
+        }),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -228,6 +409,9 @@ fn merge_at(
     // not by the input.
     if level > options.max_depth {
         return Err(ConfigError::limit_exceeded("max_depth", options.max_depth));
+    }
+    if is_index_patch(&overlay) {
+        return apply_patch(base, overlay, options, path, level);
     }
     if options.depth == MergeDepth::Shallow && level > 0 {
         return Ok(pick(base, overlay, options));

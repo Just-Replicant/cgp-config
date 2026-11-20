@@ -36,7 +36,9 @@ use crate::{ConfigValue, Kind};
 ///
 /// The "active profile is not defined anywhere" warning (`LoadWarning::MissingProfile`)
 /// needs to know whether a profile *file* exists too, so it is emitted by the source
-/// providers' profile loader, not here.
+/// providers' profile loader, not here. This preparer records a `$profiles.{active}`
+/// table it expands with `CanReportWarning::report_profile_table`, and the profile
+/// loader reads that record instead of reading and parsing the main file again.
 pub struct PrepareFileLayer;
 
 #[cgp_impl(PrepareFileLayer)]
@@ -62,20 +64,27 @@ where
             &limits,
             &mut |warning| self.report_warning(warning),
         )
+        .map(|(layer, has_active_table)| {
+            if has_active_table {
+                self.report_profile_table(self.active_profile());
+            }
+            layer
+        })
         .map_err(Self::raise_error)
     }
 }
 
-/// The body of [`PrepareFileLayer`], independent of the context.
+/// The body of [`PrepareFileLayer`], independent of the context: the prepared layer, and
+/// whether the document has a `$profiles.{active}` table.
 fn prepare_file_layer(
     layer: ConfigValue,
     active_profile: &str,
     schema: Option<&'static ConfigMeta>,
     limits: &LoadLimits,
     report: &mut dyn FnMut(LoadWarning),
-) -> Result<ConfigValue, ConfigError> {
+) -> Result<(ConfigValue, bool), ConfigError> {
     let Some(map) = layer.as_map() else {
-        return Ok(layer);
+        return Ok((layer, false));
     };
     let origin = layer.meta().origin.clone();
     // Aliases and flattened keys become current names per document (and per profile
@@ -86,7 +95,7 @@ fn prepare_file_layer(
     };
     if !reserved::ALL.iter().any(|key| map.contains_key(key)) {
         report(LoadWarning::AssumedVersion { origin });
-        return canonical(layer, report);
+        return canonical(layer, report).map(|layer| (layer, false));
     }
 
     let mut layer = layer;
@@ -110,7 +119,7 @@ fn prepare_file_layer(
     }
     let mut layer = canonical(layer, report)?;
     let Some(profiles) = profiles else {
-        return Ok(layer);
+        return Ok((layer, false));
     };
     let Some(tables) = profiles.as_map() else {
         return Err(type_error(
@@ -120,6 +129,7 @@ fn prepare_file_layer(
         ));
     };
 
+    let has_active_table = tables.get(active_profile).is_some_and(ConfigValue::is_map);
     let options = MergeOptions::DEEP.with_limits(limits);
     let mut names = ["default", active_profile]
         .into_iter()
@@ -140,7 +150,7 @@ fn prepare_file_layer(
         mark_profile(&mut overlay, &Arc::from(name));
         layer = merge(layer, overlay, &options)?;
     }
-    Ok(layer.with_meta(root_meta))
+    Ok((layer.with_meta(root_meta), has_active_table))
 }
 
 /// `$version` as a `u32`.
@@ -199,8 +209,31 @@ mod tests {
         let mut warnings = Vec::new();
         let result = prepare_file_layer(layer, profile, None, &LoadLimits::DEFAULT, &mut |w| {
             warnings.push(w);
-        });
+        })
+        .map(|(layer, _)| layer);
         (result, warnings)
+    }
+
+    #[test]
+    fn an_active_profile_table_is_recorded() {
+        let layer = file(ConfigValue::map([(
+            "$profiles",
+            ConfigValue::map([("prod", ConfigValue::map([("port", 2.into())]))]),
+        )]));
+        let found = |profile: &str| {
+            prepare_file_layer(
+                layer.clone(),
+                profile,
+                None,
+                &LoadLimits::DEFAULT,
+                &mut |_| {},
+            )
+            .unwrap()
+            .1
+        };
+        assert!(found("prod"));
+        assert!(!found("staging"));
+        assert!(!found("default"));
     }
 
     #[test]

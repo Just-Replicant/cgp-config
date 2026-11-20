@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use crate::ConfigValue;
 use crate::de::{UnknownKey, from_value_with_limits};
 use crate::merge::{ArrayMerge, MergeDepth, MergeOptions, Precedence, merge};
-use crate::schema::{merge_with_schema, normalize, split_denied};
+use crate::schema::{denied_unknown, merge_with_schema, normalize_lenient, split_denied};
 
 /// The empty map, as the start of the layer fold. The preset provider.
 pub struct EmptyMap;
@@ -215,7 +215,9 @@ impl<Context> UnknownKeyPolicy<Context> for IgnoreUnknownKeys {
 /// `UseConfigMeta<AppConfig>`), the tree is first normalized against it (see
 /// [`crate::schema`]: flatten, aliases, mounts, durations, byte sizes, secrets, and every
 /// missing required field at once), and unknown keys inside a `deny_unknown` section fail
-/// the load whatever `Policy` says. With `NoConfigMeta` (the preset default) the tree goes
+/// the load whatever `Policy` says. Those unknown keys are reported together with the
+/// normalization or deserialization errors of the same load (one `ConfigError::Validation`
+/// holding them all), not only once everything else is fixed. With `NoConfigMeta` (the preset default) the tree goes
 /// to serde as it is.
 ///
 /// Sequences written as JSON text (env and CLI arrays) are parsed under the context's
@@ -235,13 +237,26 @@ where
 {
     fn deserialize_config(&self, value: Self::ConfigValue) -> Result<Config, Self::Error> {
         let meta = self.root_config_meta();
-        let value = match meta {
-            Some(meta) => normalize(value, meta, &mut |warning| self.report_warning(warning))
-                .map_err(Self::raise_error)?,
-            None => value,
+        let (value, normalize_error) = match meta {
+            Some(meta) => {
+                normalize_lenient(value, meta, &mut |warning| self.report_warning(warning))
+            }
+            None => (value, None),
         };
-        let (config, unknown) =
-            from_value_with_limits(&value, &self.load_limits()).map_err(Self::raise_error)?;
+        // When normalization or serde fails, the unknown keys of `deny_unknown` sections
+        // (found from the schema) join that error, so one run reports every problem.
+        let with_denied = |error: ConfigError| match meta {
+            Some(meta) => match ConfigError::unknown_keys(denied_unknown(&value, meta)) {
+                Some(unknown) => cgp_config_core::AggregateError::aggregate(error, unknown),
+                None => error,
+            },
+            None => error,
+        };
+        if let Some(error) = normalize_error {
+            return Err(Self::raise_error(with_denied(error)));
+        }
+        let (config, unknown) = from_value_with_limits(&value, &self.load_limits())
+            .map_err(|error| Self::raise_error(with_denied(error)))?;
         let unknown = match meta {
             Some(meta) => {
                 let (denied, rest) = split_denied(meta, unknown);

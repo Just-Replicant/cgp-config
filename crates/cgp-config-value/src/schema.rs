@@ -9,7 +9,9 @@
 //! [`normalize`] does, per section and recursively through nested sections:
 //!
 //! 1. **flatten**: keys of a `#[config(flatten)]` section, written on the parent, move
-//!    under the flattened field (a non-optional flattened field always gets a map);
+//!    under the flattened field (a non-optional flattened field always gets a map). A key
+//!    set both on the parent and in the field's own table, or claimed by two flattened
+//!    sections, is an error, and so is a flattened field that is not a table;
 //! 2. **aliases and mounts**: an alias or a mounted document key is renamed to the serde
 //!    key; an alias records `LoadWarning::DeprecatedKey`, and an alias next to the current
 //!    name is `ConfigError::DuplicateKey`;
@@ -115,6 +117,85 @@ pub fn normalize(
     pass.errors.map_or(Ok(value), Err)
 }
 
+/// [`normalize`] that always returns the normalized tree, with the failures (if any) next
+/// to it, so a caller can keep checking the tree (for example for unknown keys in
+/// `deny_unknown` sections, see [`denied_unknown`]) and report everything at once.
+pub fn normalize_lenient(
+    mut value: ConfigValue,
+    meta: &'static ConfigMeta,
+    report: &mut dyn FnMut(LoadWarning),
+) -> (ConfigValue, Option<ConfigError>) {
+    let mut pass = Pass {
+        report,
+        errors: None,
+        full: true,
+    };
+    pass.section(&mut value, meta, &KeyPath::root(), 0);
+    (value, pass.errors)
+}
+
+/// The keys of `value` (normalized, serde form) inside a `deny_unknown` section that
+/// the section does not declare, in document order, with "did you mean" suggestions.
+/// Found from the schema alone, so it works when deserialization fails; after a
+/// successful deserialization [`split_denied`] gives the same keys.
+#[must_use]
+pub fn denied_unknown(value: &ConfigValue, meta: &'static ConfigMeta) -> Vec<UnknownKey> {
+    let mut out = Vec::new();
+    denied_into(value, meta, &KeyPath::root(), &mut out, 0);
+    out
+}
+
+fn denied_into(
+    value: &ConfigValue,
+    meta: &'static ConfigMeta,
+    path: &KeyPath,
+    out: &mut Vec<UnknownKey>,
+    depth: usize,
+) {
+    if depth >= MAX_SECTION_DEPTH {
+        return;
+    }
+    let Some(map) = value.as_map() else {
+        return;
+    };
+    for (key, child) in map.iter() {
+        let child_path = path.join(PathSegment::Key(key.into()));
+        let Some(field) = meta.field(key) else {
+            if meta.deny_unknown {
+                let suggestion =
+                    cgp_config_core::suggest(key, meta.fields.iter().map(|field| field.key))
+                        .map(Into::into);
+                out.push(UnknownKey::new(
+                    child_path,
+                    suggestion,
+                    child.meta().clone(),
+                ));
+            }
+            continue;
+        };
+        let Some(nested) = field.nested else {
+            continue;
+        };
+        let section = nested.section();
+        match (nested.shape, child.kind()) {
+            (NestedShape::Single, _) => denied_into(child, section, &child_path, out, depth + 1),
+            (NestedShape::Seq, Kind::Array(elements)) => {
+                for (index, element) in elements.iter().enumerate() {
+                    let element_path = child_path.join(PathSegment::Index(index));
+                    denied_into(element, section, &element_path, out, depth + 1);
+                }
+            }
+            (NestedShape::Map, Kind::Map(entries)) => {
+                for (name, entry) in entries.iter() {
+                    let entry_path = child_path.join(PathSegment::Key(name.into()));
+                    denied_into(entry, section, &entry_path, out, depth + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Renames aliases and mounted keys and moves flattened keys, in one layer, before it is
 /// merged with others. File preparation (`PrepareFileLayer`) runs this so an alias in one
 /// layer and the current name in another merge by precedence instead of colliding.
@@ -165,7 +246,7 @@ impl Pass<'_> {
             // Not a table: serde reports the type error with the node's provenance.
             return;
         };
-        Self::flatten(map, meta, &origin);
+        self.flatten(map, meta, path, &origin);
         self.rename(map, meta, path);
         for field in meta.fields {
             let field_path = path.join(field.key);
@@ -187,6 +268,19 @@ impl Pass<'_> {
             let section = nested.section();
             match nested.shape {
                 NestedShape::Single => self.section(child, section, &field_path, depth + 1),
+                NestedShape::Seq if crate::merge::is_index_patch(child) => {
+                    // A CLI index patch (`--set servers[1].host=b`): its entries are
+                    // elements, keyed by index.
+                    if let Kind::Map(entries) = child.kind_mut() {
+                        for (key, element) in entries.iter_mut() {
+                            let segment = key
+                                .parse::<usize>()
+                                .map_or_else(|_| PathSegment::Key(key.clone()), PathSegment::Index);
+                            let element_path = field_path.join(segment);
+                            self.section(element, section, &element_path, depth + 1);
+                        }
+                    }
+                }
                 NestedShape::Seq => {
                     if let Kind::Array(elements) = child.kind_mut() {
                         for (index, element) in elements.iter_mut().enumerate() {
@@ -220,28 +314,120 @@ impl Pass<'_> {
     }
 
     /// Moves the keys of flattened sections under their field.
-    fn flatten(map: &mut ConfigMap, meta: &'static ConfigMeta, origin: &Origin) {
-        for field in meta.fields.iter().filter(|field| field.flatten) {
-            let Some(section) = field.single_section() else {
+    ///
+    /// Collisions are errors, never a silent overwrite or drop:
+    ///
+    /// * a key written both on the parent and inside the flattened field's own table is
+    ///   `ConfigError::DuplicateKey` (with both locations), unless the inner value is a
+    ///   built-in default, which gives way;
+    /// * a key two flattened sections both answer to is `ConfigError::DuplicateKey` (the
+    ///   derive rejects such sections at compile time; hand-written metadata may not);
+    /// * a flattened field set to something other than a table is `ConfigError::Type` and
+    ///   stays in place (it used to be discarded).
+    fn flatten(
+        &mut self,
+        map: &mut ConfigMap,
+        meta: &'static ConfigMeta,
+        path: &KeyPath,
+        origin: &Origin,
+    ) {
+        let flattened: Vec<(&'static FieldMeta, &'static ConfigMeta)> = meta
+            .fields
+            .iter()
+            .filter(|field| field.flatten)
+            .filter_map(|field| field.single_section().map(|section| (field, section)))
+            .collect();
+        if flattened.is_empty() {
+            return;
+        }
+        // Which flattened field each parent-level key moves to.
+        let mut claims: Vec<(Arc<str>, usize)> = Vec::new();
+        for (key, value) in map.iter_shared() {
+            if answers_directly(meta, key) {
+                continue;
+            }
+            let mut owners = flattened
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, section))| section.resolve_doc_key(key).is_some())
+                .map(|(index, _)| index);
+            let Some(owner) = owners.next() else {
                 continue;
             };
-            let moved: Vec<Arc<str>> = map
-                .iter_shared()
-                .filter(|(key, _)| {
-                    !answers_directly(meta, key) && section.resolve_doc_key(key).is_some()
-                })
-                .map(|(key, _)| key.clone())
+            if let Some(other) = owners.next() {
+                self.fail(ConfigError::type_error(
+                    path.join(PathSegment::Key(key.clone())),
+                    format!(
+                        "`{key}` is a key of both flattened sections `{}` and `{}`; it cannot \
+                         be placed",
+                        flattened[owner].0.key, flattened[other].0.key
+                    ),
+                    Some(value.meta().clone()),
+                ));
+                continue;
+            }
+            claims.push((key.clone(), owner));
+        }
+        let mut moving: Vec<(Arc<str>, usize, ConfigValue)> = Vec::with_capacity(claims.len());
+        for (key, owner) in claims {
+            if let Some(entry) = map.remove(&key) {
+                moving.push((key, owner, entry));
+            }
+        }
+        for (index, (field, _)) in flattened.iter().enumerate() {
+            let field_path = path.join(field.key);
+            let mine: Vec<(Arc<str>, ConfigValue)> = moving
+                .iter()
+                .filter(|(_, owner, _)| *owner == index)
+                .map(|(key, _, value)| (key.clone(), value.clone()))
                 .collect();
-            let existing = map.remove(field.key).filter(ConfigValue::is_map);
-            if moved.is_empty() && existing.is_none() && field.optional {
+            let existing = map.remove(field.key);
+            let existing = match existing {
+                Some(value) if value.is_map() => Some(value),
+                Some(value) if value.is_null() && mine.is_empty() => {
+                    // `None` for an optional section, or serde's type error otherwise.
+                    map.insert(field.key, value);
+                    continue;
+                }
+                Some(value) => {
+                    self.fail(ConfigError::type_error(
+                        field_path,
+                        format!(
+                            "`{}` holds the flattened section `{}`, so it must be a table; \
+                             found {}",
+                            field.key,
+                            field.ty,
+                            value.kind_name()
+                        ),
+                        Some(value.meta().clone()),
+                    ));
+                    map.insert(field.key, value);
+                    // Keep the parent-level keys where they were.
+                    for (key, entry) in mine {
+                        map.insert(key, entry);
+                    }
+                    continue;
+                }
+                None => None,
+            };
+            if mine.is_empty() && existing.is_none() && field.optional {
                 continue;
             }
             let mut sub =
                 existing.unwrap_or_else(|| ConfigValue::empty_map().with_origin(origin.clone()));
             let sub_map = sub.as_map_mut().expect("a map by construction");
-            for key in moved {
-                if let Some(entry) = map.remove(&key) {
-                    sub_map.insert(key, entry);
+            for (key, entry) in mine {
+                match sub_map.get(&key) {
+                    Some(inner) if !matches!(inner.meta().origin, Origin::Defaults) => {
+                        self.fail(ConfigError::duplicate_key_with_first(
+                            field_path.join(PathSegment::Key(key.clone())),
+                            entry.meta().clone(),
+                            inner.meta().clone(),
+                        ));
+                    }
+                    _ => {
+                        sub_map.insert(key, entry);
+                    }
                 }
             }
             map.insert(field.key, sub);
@@ -495,6 +681,8 @@ fn apply_field_policies(
             continue;
         };
         match field.merge {
+            // An index patch changes single elements whatever the policy.
+            _ if crate::merge::is_index_patch(upper) => {}
             Some(cgp_config_core::FieldMerge::Replace) => {
                 upper
                     .meta_mut()

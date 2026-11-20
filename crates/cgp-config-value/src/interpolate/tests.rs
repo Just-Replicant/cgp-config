@@ -149,14 +149,8 @@ fn failures_are_reported_together() {
             ]),
         ),
     ]);
-    let mut tree = tree;
-    let db = tree.as_map_mut().unwrap().get_mut("db").unwrap();
-    db.as_map_mut()
-        .unwrap()
-        .get_mut("password")
-        .unwrap()
-        .meta_mut()
-        .secret = true;
+    // `db.password` is `#[config(secret)]` in the schema; the node itself is not marked
+    // yet (interpolation runs before `normalize`), and the reference is still refused.
     let ConfigError::Validation(errors) = expand(tree).unwrap_err() else {
         panic!("expected aggregated errors");
     };
@@ -187,4 +181,77 @@ fn cycles_and_depth() {
     assert_eq!(error.code(), "config::limit_exceeded");
     let ok = interpolate_tree(tree, App::META, &env(), &LoadLimits::DEFAULT).unwrap();
     assert_eq!(text(&ok, "host"), "x");
+}
+
+#[test]
+fn secret_fields_are_refused_by_schema_through_every_route() {
+    // Plain reference, reference into an opted-in secret, and a reference below a secret.
+    for reference in ["${ref:db.password}", "${ref:db.password.inner}"] {
+        let tree = ConfigValue::map([
+            ("host", ConfigValue::from(reference)),
+            (
+                "db",
+                ConfigValue::map([(
+                    "password",
+                    ConfigValue::map([("inner", ConfigValue::from("hunter2"))]),
+                )]),
+            ),
+        ]);
+        let error = expand(tree).unwrap_err();
+        assert!(error.to_string().contains("secret"), "{reference}: {error}");
+        assert!(!error.to_string().contains("hunter2"));
+    }
+    let tree = ConfigValue::map([
+        ("host", ConfigValue::from("${ref:db.password}")),
+        (
+            "db",
+            ConfigValue::map([("password", ConfigValue::from("hunter2"))]),
+        ),
+    ]);
+    assert!(expand(tree).unwrap_err().to_string().contains("secret"));
+    // A node marked secret by its source (no schema flag) is refused too.
+    let tree = ConfigValue::map([
+        ("host", ConfigValue::from("${ref:plain}")),
+        ("plain", {
+            let mut value = ConfigValue::from("hunter2");
+            value.meta_mut().secret = true;
+            value
+        }),
+    ]);
+    assert!(expand(tree).unwrap_err().to_string().contains("secret"));
+    // Non-secret siblings still resolve.
+    let tree = ConfigValue::map([
+        ("host", ConfigValue::from("${ref:db.raw}")),
+        ("db", ConfigValue::map([("raw", ConfigValue::from("ok"))])),
+    ]);
+    assert_eq!(text(&expand(tree).unwrap(), "host"), "ok");
+}
+
+#[test]
+fn secret_fields_in_lists_are_refused() {
+    struct Holder;
+    impl ConfigSection for Holder {
+        const META: &'static ConfigMeta = &ConfigMeta::new(
+            "Holder",
+            &[
+                FieldMeta::new("note", "note").with_interpolate(true),
+                FieldMeta::new("dbs", "dbs").with_nested(NestedMeta::new(
+                    NestedShape::Seq,
+                    <Db as ConfigSection>::meta,
+                )),
+            ],
+        );
+    }
+    let tree = ConfigValue::map([
+        ("note", ConfigValue::from("${ref:dbs[0].password}")),
+        (
+            "dbs",
+            ConfigValue::array([ConfigValue::map([(
+                "password",
+                ConfigValue::from("hunter2"),
+            )])]),
+        ),
+    ]);
+    let error = interpolate_tree(tree, Holder::META, &env(), &LoadLimits::DEFAULT).unwrap_err();
+    assert!(error.to_string().contains("secret"), "{error}");
 }

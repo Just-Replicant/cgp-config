@@ -285,3 +285,97 @@ fn deny_unknown_applies_per_section() {
     assert_eq!(denied, ["http.tls.extra", "backends[0].typo"]);
     assert_eq!(rest, ["http.extra", "extra"]);
 }
+
+struct Logging;
+impl ConfigSection for Logging {
+    const META: &'static ConfigMeta =
+        &ConfigMeta::new("Logging", &[FieldMeta::new("log_level", "log_level")]);
+}
+
+/// Hand-written metadata the derive would reject: two flattened sections share a key.
+struct Ambiguous;
+impl ConfigSection for Ambiguous {
+    const META: &'static ConfigMeta = &ConfigMeta::new(
+        "Ambiguous",
+        &[
+            FieldMeta::new("common", "common")
+                .with_flatten(true)
+                .with_nested(NestedMeta::new(
+                    NestedShape::Single,
+                    <Common as ConfigSection>::meta,
+                )),
+            FieldMeta::new("logging", "logging")
+                .with_flatten(true)
+                .with_nested(NestedMeta::new(
+                    NestedShape::Single,
+                    <Logging as ConfigSection>::meta,
+                )),
+        ],
+    );
+}
+
+fn at(file: &str, line: u32) -> Meta {
+    Meta::new(Origin::file(file)).with_span(cgp_config_core::Span::new(0, 1, line, 1))
+}
+
+#[test]
+fn a_key_on_the_parent_and_in_the_flattened_table_is_a_duplicate() {
+    let layer = ConfigValue::map([
+        (
+            "log_level",
+            ConfigValue::from("debug").with_meta(at("a.toml", 1)),
+        ),
+        (
+            "common",
+            ConfigValue::map([(
+                "log_level",
+                ConfigValue::from("warn").with_meta(at("a.toml", 3)),
+            )]),
+        ),
+    ]);
+    let error = super::canonicalize(layer.clone(), App::META, &mut |_| {}).unwrap_err();
+    assert_eq!(error.code(), "config::duplicate_key");
+    let text = error.to_string();
+    assert!(text.contains("common.log_level"), "{text}");
+    assert!(
+        text.contains("a.toml:1:1") && text.contains("a.toml:3:1"),
+        "{text}"
+    );
+    // The merged-tree pass agrees.
+    assert_eq!(run(layer).0.unwrap_err().code(), "config::duplicate_key");
+}
+
+#[test]
+fn a_parent_key_overrides_a_flattened_default() {
+    let mut defaults = defaults_tree(App::META);
+    let overlay = ConfigValue::map([("log_level", ConfigValue::from("debug"))]);
+    defaults = crate::merge::merge(defaults, overlay, &crate::merge::MergeOptions::DEEP).unwrap();
+    let tree = run(defaults).0.unwrap();
+    assert_eq!(
+        tree.get_path(&"common.log_level".into()).unwrap().as_str(),
+        Some("debug")
+    );
+}
+
+#[test]
+fn a_flattened_field_that_is_not_a_table_is_kept_and_reported() {
+    let layer = ConfigValue::map([("common", ConfigValue::from("oops"))]);
+    let error = super::canonicalize(layer.clone(), App::META, &mut |_| {}).unwrap_err();
+    assert_eq!(error.code(), "config::type");
+    assert!(error.to_string().contains("must be a table"), "{error}");
+    let layer = ConfigValue::map([
+        ("common", ConfigValue::from(1)),
+        ("log_level", ConfigValue::from("debug")),
+    ]);
+    assert!(super::canonicalize(layer, App::META, &mut |_| {}).is_err());
+}
+
+#[test]
+fn a_key_two_flattened_sections_answer_to_is_rejected() {
+    let layer = ConfigValue::map([("log_level", ConfigValue::from("debug"))]);
+    let error = super::canonicalize(layer, Ambiguous::META, &mut |_| {}).unwrap_err();
+    assert!(
+        error.to_string().contains("both flattened sections"),
+        "{error}"
+    );
+}
