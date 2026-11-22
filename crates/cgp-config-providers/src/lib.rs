@@ -6,6 +6,8 @@
 pub mod bootstrap;
 #[cfg(feature = "clap")]
 pub mod cli;
+#[cfg(feature = "miette")]
+pub mod diagnostic;
 #[cfg(feature = "dotenv")]
 pub mod dotenv;
 pub mod env;
@@ -14,6 +16,9 @@ pub mod layers;
 pub mod loader;
 pub mod location;
 pub mod presets;
+pub mod quick;
 pub mod read;
+#[cfg(feature = "secrets")]
+pub mod secrets;
 pub mod sources;
 pub mod validate;

@@ -13,9 +13,10 @@ use std::path::{Path, PathBuf};
 
 use cgp_config_core::markers::{ConfigDir, ConfigFile, Embedded, LocalFile, ProfileFile};
 use cgp_config_core::{
-    CanMergeLayers, CanParseFormat, CanPrepareLayer, CanReportWarning, ConfigError,
-    HasActiveProfile, HasConfigValueType, HasLoadLimits, KeyPath, LayerSkipped, LoadWarning,
-    Origin, SourceLoaded, SourceLoader, SourceLoaderComponent,
+    CanMergeLayers, CanParseFormat, CanPrepareLayer, CanReportWarning, ConfigError, ConfigMeta,
+    FieldMeta, HasActiveProfile, HasConfigValueType, HasLoadLimits, HasRootConfigMeta, KeyPath,
+    LayerSkipped, LoadWarning, NestedShape, Origin, SourceLoaded, SourceLoader,
+    SourceLoaderComponent,
 };
 use cgp_config_formats::{FormatKind, parse_document};
 use cgp_config_value::{ConfigValue, Kind};
@@ -26,12 +27,17 @@ use crate::read::{CanReadConfigFile, FileText, origin_of};
 
 /// Checks a parsed document and records the read-permission warning.
 ///
+/// `meta` is the root schema, when the context has one. A group- or world-readable file
+/// warns when it holds a secret reference or a non-null value for a schema field marked
+/// secret.
+///
 /// # Errors
 ///
 /// `ConfigError::Type` when the root is not a table.
 pub fn finish_document(
     tree: ConfigValue,
     file: &FileText,
+    meta: Option<&ConfigMeta>,
     report: &mut dyn FnMut(LoadWarning),
 ) -> Result<ConfigValue, ConfigError> {
     let tree = match tree.kind() {
@@ -48,12 +54,66 @@ pub fn finish_document(
             ));
         }
     };
-    if file.readable_by_others && contains_secret_reference(&tree) {
+    if file.readable_by_others
+        && (contains_secret_reference(&tree)
+            || meta.is_some_and(|meta| schema_holds_secret(&tree, meta)))
+    {
         report(LoadWarning::SecretWorldReadable {
             origin: file.origin.clone(),
         });
     }
     Ok(tree)
+}
+
+/// Whether `meta` marks a field secret and the document has a non-null value there.
+#[must_use]
+pub fn schema_holds_secret(value: &ConfigValue, meta: &ConfigMeta) -> bool {
+    fn walk(value: &ConfigValue, meta: &ConfigMeta, depth: usize) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        let Kind::Map(_) = value.kind() else {
+            return false;
+        };
+        meta.fields
+            .iter()
+            .any(|field| field_holds_secret(value, field, depth))
+    }
+    fn field_holds_secret(value: &ConfigValue, field: &FieldMeta, depth: usize) -> bool {
+        let Some(child) = lookup(value, field) else {
+            return false;
+        };
+        if matches!(child.kind(), Kind::Null) {
+            return false;
+        }
+        if field.secret {
+            return true;
+        }
+        let Some(nested) = field.nested else {
+            return false;
+        };
+        let section = nested.section();
+        match nested.shape {
+            NestedShape::Single => walk(child, section, depth + 1),
+            NestedShape::Seq => match child.kind() {
+                Kind::Array(items) => items.iter().any(|item| walk(item, section, depth + 1)),
+                _ => false,
+            },
+            NestedShape::Map => match child.kind() {
+                Kind::Map(map) => map.values().any(|item| walk(item, section, depth + 1)),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    walk(value, meta, 0)
+}
+
+fn lookup<'a>(value: &'a ConfigValue, field: &FieldMeta) -> Option<&'a ConfigValue> {
+    value
+        .get(field.doc_key)
+        .or_else(|| value.get(field.key))
+        .or_else(|| field.aliases.iter().find_map(|alias| value.get(alias)))
 }
 
 /// The reference schemes of design plan §6.9 (`env:`, `file:`, `docker:`, and the
@@ -69,8 +129,8 @@ pub const SECRET_SCHEMES: &[&str] = &["env", "file", "docker", "vault", "aws", "
 /// * any string, at any depth, of the form `{scheme}:{rest}` for a scheme in
 ///   [`SECRET_SCHEMES`] (`password = "docker:db"`).
 ///
-/// This is a stopgap: phase 4 (secrets) replaces it with the schema (`Secret<T>` fields
-/// and `#[config(secret)]` paths) and the resolver's own scheme table.
+/// A schema field marked secret is detected separately ([`schema_holds_secret`]), so a
+/// literal secret with no `scheme:` text still warns.
 ///
 /// ```
 /// use cgp_config_providers::file::contains_secret_reference;
@@ -154,6 +214,7 @@ where
     Context: CanReadConfigFile
         + CanRaiseError<ConfigError>
         + CanReportWarning
+        + HasRootConfigMeta
         + CanLog<SourceLoaded>
         + CanLog<LayerSkipped>,
 {
@@ -165,8 +226,10 @@ where
         return Ok(None);
     };
     let tree = parse(context, &file.origin, &file.text)?;
-    let tree = finish_document(tree, &file, &mut |warning| context.report_warning(warning))
-        .map_err(Context::raise_error)?;
+    let tree = finish_document(tree, &file, context.root_config_meta(), &mut |warning| {
+        context.report_warning(warning);
+    })
+    .map_err(Context::raise_error)?;
     context.log(SourceLoaded::new(file.origin.clone(), tree.count_entries()));
     Ok(Some(tree))
 }
@@ -222,6 +285,7 @@ where
         + HasConfigLocation
         + CanRaiseError<ConfigError>
         + CanReportWarning
+        + HasRootConfigMeta
         + CanLog<SourceLoaded>
         + CanLog<LayerSkipped>,
 {
@@ -256,6 +320,7 @@ where
         + HasLoadLimits
         + CanRaiseError<ConfigError>
         + CanReportWarning
+        + HasRootConfigMeta
         + CanLog<SourceLoaded>
         + CanLog<LayerSkipped>,
 {
@@ -296,6 +361,7 @@ where
         + HasLoadLimits
         + CanRaiseError<ConfigError>
         + CanReportWarning
+        + HasRootConfigMeta
         + CanLog<SourceLoaded>
         + CanLog<LayerSkipped>,
 {
@@ -333,6 +399,7 @@ where
         + HasLoadLimits
         + CanRaiseError<ConfigError>
         + CanReportWarning
+        + HasRootConfigMeta
         + CanLog<SourceLoaded>
         + CanLog<LayerSkipped>,
 {
@@ -362,6 +429,7 @@ where
         + HasLoadLimits
         + CanRaiseError<ConfigError>
         + CanReportWarning
+        + HasRootConfigMeta
         + CanLog<SourceLoaded>
         + CanLog<LayerSkipped>,
 {
@@ -392,6 +460,7 @@ where
         + HasLoadLimits
         + CanRaiseError<ConfigError>
         + CanReportWarning
+        + HasRootConfigMeta
         + CanLog<SourceLoaded>
         + CanLog<LayerSkipped>,
 {
@@ -425,6 +494,7 @@ where
         + HasLoadLimits
         + CanRaiseError<ConfigError>
         + CanReportWarning
+        + HasRootConfigMeta
         + CanLog<SourceLoaded>
         + CanLog<LayerSkipped>,
 {
@@ -501,8 +571,91 @@ where
         let origin = Origin::embedded(document.name);
         let tree = self.parse_format(PhantomData::<Fmt>, &origin, document.text)?;
         let file = FileText::new(Path::new(document.name), String::new());
-        let tree = finish_document(tree, &file, &mut |_| {}).map_err(Self::raise_error)?;
+        let tree = finish_document(tree, &file, None, &mut |_| {}).map_err(Self::raise_error)?;
         self.log(SourceLoaded::new(origin, tree.count_entries()));
         Ok(Some(tree))
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use cgp_config_core::{ConfigMeta, FieldMeta};
+    use cgp_config_value::ConfigValue;
+
+    use super::schema_holds_secret;
+
+    const SECRET_FIELD: &[FieldMeta] = &[FieldMeta::new("password", "password").with_secret(true)];
+    const META: ConfigMeta = ConfigMeta::new("App", SECRET_FIELD);
+
+    #[test]
+    fn a_schema_secret_with_a_value_counts_even_without_a_reference() {
+        let present = ConfigValue::map([("password", ConfigValue::from("hunter2"))]);
+        assert!(schema_holds_secret(&present, &META));
+        let absent = ConfigValue::map([("name", ConfigValue::from("app"))]);
+        assert!(!schema_holds_secret(&absent, &META));
+        let empty = ConfigValue::map([("password", ConfigValue::null())]);
+        assert!(!schema_holds_secret(&empty, &META));
+    }
+
+    #[cfg(all(unix, feature = "toml"))]
+    #[test]
+    fn a_group_readable_file_with_a_secret_warns() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use cgp_config_core::{ConfigError, LoadLimits, Origin};
+        use cgp_config_formats::{FormatKind, parse_document};
+        use cgp_fork::prelude::*;
+
+        use crate::file::finish_document;
+        use crate::read::{CanReadConfigFile, ConfigFileReaderComponent, FileText, ReadStdFile};
+
+        struct Ctx;
+        delegate_components! {
+            #[unchecked]
+            Ctx {
+                cgp_fork::core::error::ErrorTypeProviderComponent: UseType<ConfigError>,
+                cgp_fork::core::error::ErrorRaiserComponent: cgp_fork::extra::error::RaiseFrom,
+                cgp_config_core::LoadLimitsComponent: cgp_config_core::DefaultLoadLimits,
+                cgp_config_core::LoadReportComponent: cgp_config_core::IgnoreWarnings,
+                ConfigFileReaderComponent: ReadStdFile,
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.toml");
+        std::fs::write(&path, "password = \"hunter2\"\n").unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o640);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        let file = CanReadConfigFile::read_config_file(&Ctx, &path)
+            .unwrap()
+            .unwrap();
+        assert!(file.readable_by_others);
+        let tree = parse_document(
+            FormatKind::Toml,
+            &Origin::file(path.to_string_lossy().as_ref()),
+            &file.text,
+            &LoadLimits::DEFAULT,
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        finish_document(tree, &file, Some(&META), &mut |warning| {
+            warnings.push(warning)
+        })
+        .unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.code() == "config::warn::secret_world_readable"),
+            "{warnings:?}"
+        );
+
+        let quiet = dir.path().join("quiet.toml");
+        std::fs::write(&quiet, "name = \"app\"\n").unwrap();
+        let mut permissions = std::fs::metadata(&quiet).unwrap().permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(&quiet, permissions).unwrap();
+        let file = FileText::new(&quiet, String::new());
+        assert!(!file.readable_by_others);
     }
 }

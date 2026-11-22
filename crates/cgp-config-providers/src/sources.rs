@@ -334,8 +334,10 @@ mod env_document {
                 .map_err(Self::raise_error)?;
             let mut file = FileText::new(std::path::Path::new(""), String::new());
             file.origin = origin.clone();
-            let tree = finish_document(tree, &file, &mut |w| self.report_warning(w))
-                .map_err(Self::raise_error)?;
+            let tree = finish_document(tree, &file, self.root_config_meta(), &mut |w| {
+                self.report_warning(w)
+            })
+            .map_err(Self::raise_error)?;
             let tree = match self.root_config_meta() {
                 Some(meta) => canonicalize(tree, meta, &mut |w| self.report_warning(w))
                     .map_err(Self::raise_error)?,

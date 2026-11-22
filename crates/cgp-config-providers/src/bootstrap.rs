@@ -415,8 +415,7 @@ mod tests {
     // Some tests need a format to search for.
     #![cfg_attr(not(feature = "toml"), allow(unused_imports))]
 
-    use std::ffi::OsString;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use cgp_config_core::EnvSnapshot;
 
@@ -579,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "toml")]
+    #[cfg(all(unix, feature = "toml"))]
     fn search_uses_configuration_directory_from_the_snapshot() {
         let env = EnvSnapshot::from_iter([("CONFIGURATION_DIRECTORY", "/etc/svc:/other")]);
         let search = SearchPath::standard("svc", &env).with_working_dir(Some("/work".into()));
@@ -587,7 +586,9 @@ mod tests {
             .with_env(env)
             .search(search)
             .require_file(true)
-            .finish_with(|path: &Path| path.starts_with("/etc/svc") || path.starts_with("/work"));
+            .finish_with(|path: &std::path::Path| {
+                path.starts_with("/etc/svc") || path.starts_with("/work")
+            });
         assert_eq!(
             done.config_location.file,
             Some(PathBuf::from("/etc/svc/svc.toml"))
@@ -607,6 +608,7 @@ mod tests {
 
         #[cfg(unix)]
         {
+            use std::ffi::OsString;
             use std::os::unix::ffi::OsStringExt;
             let bad = OsString::from_vec(vec![0xff, 0xfe]);
             let error = Bootstrap::new("app")

@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use cgp_config_core::components::*;
 use cgp_config_core::markers::{Defaults, EnvVars, InMemory};
 use cgp_config_core::{
-    ConfigError, ConfigMeta, ConfigMetaField, ConfigSection, EnvSnapshot, IdentityLayer,
-    LoadLayered, LoadReport, LoadWarning, Nested,
+    ConfigError, ConfigLoaded, ConfigMeta, ConfigMetaField, ConfigSection, EnvSnapshot,
+    IdentityLayer, LoadLayered, LoadReport, LoadStamp, LoadWarning, Nested,
 };
 #[cfg(any(feature = "toml", feature = "json"))]
 use cgp_config_core::{LoadLimits, Origin};
@@ -102,6 +102,13 @@ impl<Layers> core::fmt::Debug for StdLoader<Layers> {
 }
 
 impl StdLoader {
+    /// Starts a [`LoaderBuilder`]. The builder does not read the process environment
+    /// until [`LoaderBuilder::capture_env`].
+    #[must_use]
+    pub fn builder() -> LoaderBuilder {
+        LoaderBuilder::default()
+    }
+
     /// A twelve-factor loader for `bootstrapped`, without a schema (plain serde types).
     ///
     /// # Errors
@@ -162,9 +169,23 @@ impl<Layers> StdLoader<Layers> {
     /// Any `ConfigError` of the pipeline.
     pub fn load<Config>(&self) -> Result<Config, ConfigError>
     where
-        Self: CanLoadConfig<Config, Error = ConfigError>,
+        Self: CanLoadConfig<Config, Error = ConfigError> + CanLog<ConfigLoaded>,
     {
-        self.load_config()
+        let config = self.load_config()?;
+        log_loaded(self);
+        Ok(config)
+    }
+}
+
+pub(crate) fn log_loaded<Context>(context: &Context)
+where
+    Context: CanLog<ConfigLoaded> + HasField<Symbol!("load_report"), Value = LoadReport>,
+{
+    if let Some(stamp) = context
+        .get_field(PhantomData::<Symbol!("load_report")>)
+        .stamp()
+    {
+        context.log(ConfigLoaded::new(stamp.origin, stamp.fingerprint));
     }
 }
 
@@ -265,9 +286,11 @@ impl MemoryLoader {
     /// Any `ConfigError` of the pipeline.
     pub fn load<Config>(&self) -> Result<Config, ConfigError>
     where
-        Self: CanLoadConfig<Config, Error = ConfigError>,
+        Self: CanLoadConfig<Config, Error = ConfigError> + CanLog<ConfigLoaded>,
     {
-        self.load_config()
+        let config = self.load_config()?;
+        log_loaded(self);
+        Ok(config)
     }
 
     /// Loads `Config` through the loader's stages (collect, interpolate, deserialize,
@@ -289,11 +312,13 @@ impl MemoryLoader {
             + CanDeserializeConfig<Config>
             + CanResolveSecrets<Config>
             + CanValidateConfig<Config>
+            + CanOpenSecretSession
             + HasErrorType<Error = ConfigError>,
     {
         self.clear_warnings();
         let tree = self.collect_layers(self.empty_config_value(), PhantomData::<TestLayers>)?;
         let tree = self.interpolate(tree)?;
+        let _session = self.open_secret_session();
         let mut config = self.deserialize_config(tree)?;
         self.resolve_secrets(&mut config)?;
         resolver(&mut config)?;
@@ -301,6 +326,7 @@ impl MemoryLoader {
         Ok(Loaded {
             config,
             warnings: self.load_report.warnings(),
+            stamp: self.load_report.stamp(),
         })
     }
 }
@@ -313,12 +339,52 @@ pub struct Loaded<Config> {
     pub config: Config,
     /// The warnings, in order (unknown keys, deprecated names, ...).
     pub warnings: Vec<LoadWarning>,
+    /// The redacted stamp (fingerprint, explain, dump), when deserialization recorded one.
+    pub stamp: Option<LoadStamp>,
+}
+
+impl<Config> Loaded<Config> {
+    /// FNV-1a 64 of the canonical redacted JSON.
+    #[must_use]
+    pub fn fingerprint(&self) -> Option<u64> {
+        self.stamp.as_ref().map(|stamp| stamp.fingerprint)
+    }
+
+    /// The explanation of `path`.
+    #[must_use]
+    pub fn explain(&self, path: &str) -> Option<String> {
+        self.stamp
+            .as_ref()
+            .and_then(|stamp| stamp.explain(path))
+            .map(|explanation| explanation.to_string())
+    }
+
+    /// Canonical redacted JSON.
+    #[must_use]
+    pub fn dump_json(&self) -> Option<&str> {
+        self.stamp.as_ref().map(|stamp| stamp.dump_json.as_str())
+    }
 }
 
 #[cfg(any(feature = "toml", feature = "json"))]
 fn root_table(tree: ConfigValue) -> Result<ConfigValue, ConfigError> {
     let file = crate::read::FileText::new(std::path::Path::new(""), String::new());
-    crate::file::finish_document(tree, &file, &mut |_| {})
+    crate::file::finish_document(tree, &file, None, &mut |_| {})
+}
+
+/// TOML of the canonical redacted JSON, when a stamp was recorded.
+///
+/// # Errors
+///
+/// The redacted JSON is not a document the TOML renderer can print.
+#[cfg(all(feature = "toml", feature = "json"))]
+pub fn dump_toml(report: &LoadReport) -> Result<Option<String>, ConfigError> {
+    let Some(json) = report.dump_json() else {
+        return Ok(None);
+    };
+    let value =
+        cgp_config_formats::parse_json(&Origin::memory("redacted"), &json, &LoadLimits::UNLIMITED)?;
+    cgp_config_formats::render_toml(&value).map(Some)
 }
 
 /// The preparers of [`MemoryLoader`]: its document is a file.
@@ -469,4 +535,146 @@ where
 impl<Config: ConfigSection> LoadSection for Config where
     MemoryLoader: CanLoadConfig<Config, Error = ConfigError>
 {
+}
+
+/// Fills a [`StdLoader`] without naming a CGP type.
+///
+/// The env prefix has no trailing separator: `APP`, so a nested key is `APP__HTTP__PORT`.
+/// `APP_` and `APP__` are rejected. The process environment is read only after
+/// [`capture_env`](Self::capture_env); otherwise pass [`env`](Self::env) or leave the
+/// snapshot empty.
+///
+/// ```
+/// use cgp_config_core::{ConfigMeta, ConfigSection, EnvSnapshot};
+/// use cgp_config_providers::loader::StdLoader;
+///
+/// struct App;
+/// impl ConfigSection for App {
+///     const META: &'static ConfigMeta = &ConfigMeta::new("App", &[]);
+/// }
+///
+/// let loader = StdLoader::builder()
+///     .app_name("demo")
+///     .file("cfg.toml")
+///     .env_prefix("DEMO")
+///     .profile("prod")
+///     .env(EnvSnapshot::new())
+///     .build::<App>()?;
+/// assert_eq!(loader.env_prefix, "DEMO");
+/// assert_eq!(loader.active_profile, "prod");
+/// assert_eq!(
+///     loader.config_location.file.as_deref().and_then(|path| path.to_str()),
+///     Some("cfg.toml")
+/// );
+/// # Ok::<(), cgp_config_core::ConfigError>(())
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct LoaderBuilder {
+    app: Option<String>,
+    prefix: Option<String>,
+    file: Option<PathBuf>,
+    profile: Option<String>,
+    env: Option<EnvSnapshot>,
+    capture: bool,
+    require_file: bool,
+}
+
+impl LoaderBuilder {
+    /// The `{app}` segment of the search and the default env prefix.
+    #[must_use]
+    pub fn app_name(mut self, app: impl Into<String>) -> Self {
+        self.app = Some(app.into());
+        self
+    }
+
+    /// An explicit config file (`--config`). It is required to exist at load time.
+    #[must_use]
+    pub fn file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.file = Some(path.into());
+        self
+    }
+
+    /// The env prefix, with no trailing `_` (`APP`, not `APP_`).
+    #[must_use]
+    pub fn env_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.prefix = Some(prefix.into());
+        self
+    }
+
+    /// The active profile (default `default`).
+    #[must_use]
+    pub fn profile(mut self, profile: impl Into<String>) -> Self {
+        self.profile = Some(profile.into());
+        self
+    }
+
+    /// Uses `env` as the snapshot. Cancels [`capture_env`](Self::capture_env).
+    #[must_use]
+    pub fn env(mut self, env: EnvSnapshot) -> Self {
+        self.capture = false;
+        self.env = Some(env);
+        self
+    }
+
+    /// Reads the process environment when [`build`](Self::build) runs.
+    #[must_use]
+    pub fn capture_env(mut self) -> Self {
+        self.capture = true;
+        self.env = None;
+        self
+    }
+
+    /// Makes a search that finds no file an error. An explicit [`file`](Self::file) is
+    /// already required.
+    #[must_use]
+    pub fn require_file(mut self, required: bool) -> Self {
+        self.require_file = required;
+        self
+    }
+
+    /// Builds a twelve-factor [`StdLoader`] for `Config`.
+    ///
+    /// # Errors
+    ///
+    /// `app_name` was not set, the prefix ends with `_`, or capturing the process
+    /// environment failed.
+    pub fn build<Config: ConfigSection>(self) -> Result<StdLoader, ConfigError> {
+        let app = self.app.ok_or_else(|| {
+            cgp_config_core::ConfigError::parse(
+                cgp_config_core::Origin::cli("app_name"),
+                None,
+                "`LoaderBuilder` needs `app_name`",
+            )
+        })?;
+        let mut boot = crate::bootstrap::Bootstrap::new(app);
+        if let Some(prefix) = self.prefix {
+            check_prefix(&prefix)?;
+            boot = boot.env_prefix(prefix);
+        }
+        if let Some(file) = self.file {
+            boot = boot.config_path(file);
+        }
+        if let Some(profile) = self.profile {
+            boot = boot.profile(profile);
+        }
+        boot = boot.require_file(self.require_file);
+        if self.capture {
+            boot = boot.capture_env()?;
+        } else if let Some(env) = self.env {
+            boot = boot.with_env(env);
+        }
+        StdLoader::for_section::<Config>(boot.finish())
+    }
+}
+
+fn check_prefix(prefix: &str) -> Result<(), ConfigError> {
+    if prefix.is_empty() || prefix.ends_with('_') {
+        return Err(ConfigError::parse(
+            cgp_config_core::Origin::cli("--env-prefix"),
+            None,
+            "an env prefix has no trailing separator (`APP`, not `APP_` or `APP__`); \
+             nested keys are `{PREFIX}__{PATH}`",
+        ));
+    }
+    Ok(())
 }

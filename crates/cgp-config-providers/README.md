@@ -50,7 +50,11 @@ ignore. A search that finds no file leaves the layer absent unless `require_file
 * `StrictPreset`: `TwelveFactorPreset` with `DenyUnknownKeys` and
   `RequireActiveProfile`.
 * `TestConfigPreset`: extends `CoreConfigPreset` with defaults, an in-memory document,
-  and env (`TestLayers`), no file IO and no logging. Mock secret schemes arrive with P4.
+  and env (`TestLayers`), no file IO and no logging. It does not resolve secrets.
+* `SecretsPreset` (feature `secrets`): `TwelveFactorPreset` plus `OpenStdSession`,
+  `StdSecretRoots`, and the `env:` / `file:` / `docker:` resolvers.
+* `MockSecretsPreset` (feature `secrets`): `TestConfigPreset` plus a `secret_map` field
+  (`SecretMap`). Opt in; `MemoryLoader` stays on `DenySecrets`.
 
 `StdLoader<Layers>` (default `TwelveFactorLayers`) and `MemoryLoader` are ready-made
 contexts:
@@ -67,6 +71,14 @@ let config: AppConfig = loader.load()?;
 
 `from_toml_str`, `from_json_str`, `from_*_with` (secret resolver, warnings), and
 `from_defaults` cover the common one-liners.
+
+`quick::load("myapp")` builds a `StdLoader` from one capture of the process environment
+and the standard search. `quick::load_from(snapshot, files)` is the same pipeline
+against an `EnvSnapshot` and an in-memory file map (virtual root `/cgp-config-quick`);
+doctests and tests call that, not `load`. `StdLoader::builder()` sets `app_name`,
+`file`, `env_prefix` (no trailing `_`), and `profile` without a CGP type in the
+signature. The builder reads the process environment only when `capture_env()` is
+called.
 
 ## Validation adapters
 

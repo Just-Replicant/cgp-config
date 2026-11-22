@@ -30,6 +30,10 @@ interpolate = ["cgp-config-value/interpolate"]
 # Validation adapters.
 validate-garde     = ["dep:garde"]
 validate-validator = ["dep:validator"]
+# `Secret<T>`, env/file/docker resolvers, `SecretsPreset`.
+secrets = ["dep:cgp-config-secrets"]
+# Labeled `ConfigDiagnostic` (secret spans suppress the snippet).
+miette = ["dep:miette"]
 
 [dependencies]
 cgp-config-core    = { workspace = true, features = ["std"] }
@@ -42,7 +46,9 @@ zeroize            = { workspace = true }
 
 clap      = { workspace = true, optional = true }
 garde     = { workspace = true, optional = true }
+miette    = { workspace = true, optional = true }
 validator = { workspace = true, optional = true }
+cgp-config-secrets = { workspace = true, optional = true }
 
 [dev-dependencies]
 cgp-fork  = { workspace = true, features = ["alloc", "anyhow"] }

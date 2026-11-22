@@ -29,7 +29,8 @@
 //! [`TestConfigPreset`] extends `CoreConfigPreset` directly, not `TwelveFactorPreset`: it
 //! wires only [`TestSources`] and a no-op logger, with no file reader and no format
 //! table, so a test context needs no `config_location` (or any other file field) and
-//! cannot touch the filesystem. Mock secret schemes for tests are phase 4 (secrets).
+//! cannot touch the filesystem. Mock secrets are `MockSecretsPreset` (feature `secrets`),
+//! not a change to this preset.
 //!
 //! The context supplies the fields the providers read: `env_snapshot`, `env_prefix`,
 //! `active_profile`, `config_location`, `load_report` (and `dotenv_path`,
@@ -51,6 +52,11 @@ pub mod __entries {
         FormatRendererComponent, LoadLayered, NoopLogger, SourceLoaderComponent,
     };
     pub use cgp_config_formats::EnabledFormats;
+    #[cfg(feature = "secrets")]
+    pub use cgp_config_secrets::{
+        MockSecretSchemes, OpenMockSession, SecretResolverComponent, SecretRootsComponent,
+        StdSecretSchemes,
+    };
     pub use cgp_config_value::preset::__entries::*;
     pub use cgp_config_value::{CoreConfigPreset, DenyUnknownKeys, SerdeWithProvenance};
     pub use cgp_fork::prelude::{LoggerComponent, UseDelegate};
@@ -61,6 +67,8 @@ pub mod __entries {
     };
     pub use crate::presets::{StdSources, StrictSources};
     pub use crate::read::{ConfigFileReaderComponent, ReadStdFile};
+    #[cfg(feature = "secrets")]
+    pub use crate::secrets::{OpenStdSession, StdSecretRoots};
 }
 
 use cgp_config_core::markers::{
@@ -222,6 +230,25 @@ cgp_preset! {
         SourceLoaderComponent: UseDelegate<TestSources>,
         ConfigLoaderComponent: LoadLayered<TestLayers>,
         LoggerComponent: NoopLogger,
+    }
+}
+
+#[cfg(feature = "secrets")]
+cgp_preset! {
+    #[version(1)]
+    SecretsPreset: TwelveFactorPreset {
+        override SecretSessionComponent: OpenStdSession,
+        SecretResolverComponent: UseDelegate<StdSecretSchemes>,
+        SecretRootsComponent: StdSecretRoots,
+    }
+}
+
+#[cfg(feature = "secrets")]
+cgp_preset! {
+    #[version(1)]
+    MockSecretsPreset: TestConfigPreset {
+        override SecretSessionComponent: OpenMockSession,
+        SecretResolverComponent: UseDelegate<MockSecretSchemes>,
     }
 }
 
