@@ -30,6 +30,11 @@ where
         self.get_field(PhantomData::<Symbol!("load_report")>)
             .has_profile_table(profile)
     }
+
+    fn note_loaded(&self, stamp: crate::LoadStamp) {
+        self.get_field(PhantomData::<Symbol!("load_report")>)
+            .set_stamp(stamp);
+    }
 }
 
 /// Drops every warning, so there is nothing to clear. For contexts without a
@@ -49,4 +54,6 @@ impl WarningReporter {
     fn profile_table_reported(&self, _profile: &str) -> bool {
         false
     }
+
+    fn note_loaded(&self, _stamp: crate::LoadStamp) {}
 }

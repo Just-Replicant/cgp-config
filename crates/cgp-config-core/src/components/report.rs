@@ -30,6 +30,10 @@ pub trait CanReportWarning {
     /// Whether [`report_profile_table`](Self::report_profile_table) was called for
     /// `profile` during the current load. A reporter that keeps nothing answers `false`.
     fn profile_table_reported(&self, profile: &str) -> bool;
+
+    /// Records the redacted stamp of the tree being deserialized (fingerprint, explain,
+    /// dump). A reporter that keeps nothing drops it.
+    fn note_loaded(&self, stamp: crate::LoadStamp);
 }
 
 /// The warnings collected on a loader. Implemented automatically for a context with a

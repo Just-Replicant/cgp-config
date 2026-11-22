@@ -44,6 +44,7 @@ mod key_check;
 mod limits;
 mod macros;
 pub mod markers;
+mod project;
 pub mod providers;
 mod root_meta;
 mod section;
@@ -55,6 +56,8 @@ mod env;
 #[cfg(feature = "alloc")]
 mod error;
 #[cfg(feature = "alloc")]
+mod explain;
+#[cfg(feature = "alloc")]
 mod log;
 #[cfg(feature = "alloc")]
 mod meta;
@@ -65,6 +68,11 @@ mod path;
 #[cfg(feature = "alloc")]
 mod report;
 #[cfg(feature = "alloc")]
+mod secret_ref;
+#[cfg(feature = "alloc")]
+#[allow(clippy::std_instead_of_core)]
+mod session;
+#[cfg(feature = "alloc")]
 mod suggest;
 #[cfg(feature = "alloc")]
 mod validation;
@@ -73,16 +81,22 @@ pub use components::*;
 #[cfg(feature = "alloc")]
 pub use env::{EnvSnapshot, HasEnvPrefix, HasEnvSnapshot};
 #[cfg(feature = "alloc")]
-pub use error::{ConfigError, RedactedRef, UnknownKey, ValidationErrors, ValidationIssue, codes};
+pub use error::{
+    ConfigError, RedactedRef, UnknownKey, ValidationErrors, ValidationIssue, codes,
+    parse_secret_session_error, secret_session_message,
+};
+#[cfg(feature = "alloc")]
+pub use explain::{ExplainNode, Explanation, LoadStamp};
 pub use limits::LoadLimits;
 #[cfg(feature = "alloc")]
-pub use log::{LayerSkipped, NoopLogger, SourceLoaded};
+pub use log::{ConfigLoaded, LayerSkipped, NoopLogger, SourceLoaded};
 #[cfg(feature = "alloc")]
 pub use meta::{Meta, Provenance};
 #[cfg(feature = "alloc")]
 pub use origin::{DotEnvSource, Origin, Span};
 #[cfg(feature = "alloc")]
 pub use path::{KeyPath, KeyPathParseError, PathSegment};
+pub use project::ProjectSection;
 pub use providers::*;
 #[cfg(feature = "alloc")]
 pub use report::{LoadReport, LoadWarning};
@@ -90,10 +104,18 @@ pub use root_meta::{
     ConfigMetaField, HasRootConfigMeta, NoConfigMeta, RootConfigMetaComponent,
     RootConfigMetaGetter, UseConfigMeta,
 };
+#[cfg(feature = "alloc")]
+pub use secret_ref::SecretRef;
 pub use section::{
     ConfigMeta, ConfigSection, ConstDefault, FieldChain, FieldMerge, FieldMeta,
     FinalizeOptionalAll, MissingFields, NestedMeta, NestedShape, ParseKind, ReloadPolicy,
 };
+#[cfg(all(feature = "alloc", feature = "std"))]
+pub use session::SecretReader;
+#[cfg(all(feature = "alloc", feature = "std"))]
+pub use session::current_secret_reader;
+#[cfg(feature = "alloc")]
+pub use session::{SecretGuard, SecretText, read_secret_reference};
 pub use static_path::StaticKeyPath;
 #[cfg(feature = "alloc")]
 pub use suggest::{edit_distance, suggest};

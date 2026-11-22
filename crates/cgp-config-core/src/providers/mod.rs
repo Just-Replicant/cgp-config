@@ -9,6 +9,8 @@ mod no_validation;
 #[cfg(feature = "alloc")]
 mod report;
 mod secrets;
+#[cfg(feature = "alloc")]
+mod session;
 
 pub use collect::CollectInOrder;
 pub use identity::IdentityLayer;
@@ -19,3 +21,5 @@ pub use no_validation::NoValidation;
 #[cfg(feature = "alloc")]
 pub use report::{IgnoreWarnings, ReportOnLoader};
 pub use secrets::DenySecrets;
+#[cfg(feature = "alloc")]
+pub use session::NoSecretSession;

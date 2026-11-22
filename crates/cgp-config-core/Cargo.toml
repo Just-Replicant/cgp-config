@@ -20,13 +20,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 # Owned strings: `KeyPath`, `Origin`, `Meta`, `ConfigError`, `LoadWarning`, `LoadReport`,
 # and the format component traits.
-alloc = ["dep:spin"]
+alloc = ["dep:spin", "dep:zeroize"]
 # `std::sync::Mutex` behind `LoadReport` (otherwise a spin lock is used).
 std = ["alloc"]
 
 [dependencies]
 cgp-fork = { workspace = true }
 spin     = { workspace = true, optional = true }
+zeroize  = { workspace = true, optional = true }
 
 [dev-dependencies]
 anyhow   = { workspace = true }

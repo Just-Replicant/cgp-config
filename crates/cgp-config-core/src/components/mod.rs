@@ -19,6 +19,8 @@ mod reload;
 #[cfg(feature = "alloc")]
 mod report;
 mod secrets;
+#[cfg(feature = "alloc")]
+mod session;
 mod source;
 mod validate;
 mod value;
@@ -44,6 +46,8 @@ pub use reload::{
 #[cfg(feature = "alloc")]
 pub use report::{CanReportWarning, HasLoadReport, LoadReportComponent, WarningReporter};
 pub use secrets::{CanResolveSecrets, SecretsResolver, SecretsResolverComponent};
+#[cfg(feature = "alloc")]
+pub use session::{CanOpenSecretSession, SecretSessionComponent, SecretSessionOpener};
 pub use source::{CanLoadSource, SourceLoader, SourceLoaderComponent};
 pub use validate::{CanValidateConfig, ConfigValidator, ConfigValidatorComponent};
 pub use value::{

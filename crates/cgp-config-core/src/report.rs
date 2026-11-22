@@ -2,6 +2,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::explain::LoadStamp;
 use crate::{KeyPath, Meta, Origin};
 
 /// Something worth telling the operator that does not fail the load.
@@ -107,7 +108,7 @@ impl fmt::Display for LoadWarning {
             }
             Self::SecretWorldReadable { origin } => write!(
                 f,
-                "{origin}: file contains a secret reference and is readable by group or others"
+                "{origin}: file contains a secret and is readable by group or others"
             ),
             Self::MissingProfile { profile } => {
                 write!(
@@ -169,6 +170,7 @@ pub struct LoadReport {
 struct ReportState {
     warnings: Vec<LoadWarning>,
     profile_tables: Vec<String>,
+    stamp: Option<LoadStamp>,
 }
 
 impl LoadReport {
@@ -206,13 +208,49 @@ impl LoadReport {
         self.with(|state| core::mem::take(&mut state.warnings))
     }
 
-    /// Discards the recorded warnings and profile tables (a loader does this before each
-    /// load).
+    /// Discards the recorded warnings, profile tables, and the redacted stamp (a loader
+    /// does this before each load).
     pub fn clear(&self) {
         self.with(|state| {
             state.warnings.clear();
             state.profile_tables.clear();
+            state.stamp = None;
         });
+    }
+
+    /// Records the redacted stamp of the current load (fingerprint, explain nodes, dump).
+    pub fn set_stamp(&self, stamp: LoadStamp) {
+        self.with(|state| state.stamp = Some(stamp));
+    }
+
+    /// The redacted stamp of the current load, if deserialization recorded one.
+    #[must_use]
+    pub fn stamp(&self) -> Option<LoadStamp> {
+        self.with(|state| state.stamp.clone())
+    }
+
+    /// FNV-1a 64 of the canonical redacted JSON, when a stamp was recorded.
+    #[must_use]
+    pub fn fingerprint(&self) -> Option<u64> {
+        self.with(|state| state.stamp.as_ref().map(|stamp| stamp.fingerprint))
+    }
+
+    /// The explanation of `path`, when a stamp was recorded and the path exists.
+    #[must_use]
+    pub fn explain(&self, path: &str) -> Option<String> {
+        self.with(|state| {
+            state
+                .stamp
+                .as_ref()
+                .and_then(|stamp| stamp.explain(path))
+                .map(|explanation| alloc::format!("{explanation}"))
+        })
+    }
+
+    /// Canonical redacted JSON of the load, when a stamp was recorded.
+    #[must_use]
+    pub fn dump_json(&self) -> Option<String> {
+        self.with(|state| state.stamp.as_ref().map(|stamp| stamp.dump_json.clone()))
     }
 
     /// Number of recorded warnings.
@@ -263,6 +301,10 @@ impl fmt::Debug for LoadReport {
         f.debug_struct("LoadReport")
             .field("warnings", &state.warnings)
             .field("profile_tables", &state.profile_tables)
+            .field(
+                "fingerprint",
+                &state.stamp.as_ref().map(LoadStamp::fingerprint_hex),
+            )
             .finish()
     }
 }
@@ -279,6 +321,7 @@ impl From<Vec<LoadWarning>> for LoadReport {
             state: Lock::new(ReportState {
                 warnings,
                 profile_tables: Vec::new(),
+                stamp: None,
             }),
         }
     }
@@ -354,7 +397,7 @@ mod tests {
             ),
             (
                 LoadWarning::SecretWorldReadable { origin: file() },
-                "app.toml: file contains a secret reference and is readable by group or others",
+                "app.toml: file contains a secret and is readable by group or others",
                 "config::warn::secret_world_readable",
             ),
             (

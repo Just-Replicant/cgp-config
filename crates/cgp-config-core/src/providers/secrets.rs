@@ -2,16 +2,14 @@ use cgp_fork::prelude::*;
 
 use crate::{SecretsResolver, SecretsResolverComponent};
 
-/// The preset secrets stage until a secrets preset is selected.
+/// The preset secrets stage.
 ///
-/// **In this release `DenySecrets` is a no-op: it always succeeds and rejects nothing.**
-///
-/// The value tree stores secret *references* and only `Secret<T>` fields hold resolved
-/// bytes. Neither `Secret<T>` nor the generated metadata that lists a config's secret
-/// fields exists yet, so this provider has no way to see a secret field and nothing to
-/// resolve. Rejection (`ConfigError::SecretsDenied` for a config with unresolved secret
-/// fields) arrives with the `secrets` feature; until then, do not rely on this provider to
-/// keep secrets out of a config.
+/// A `Secret<T>` reference is resolved or refused while the value is deserialized,
+/// under the secret session `LoadLayered` opens first. With the preset session
+/// (`NoSecretSession`) a reference fails with `ConfigError::SecretsDenied` and a
+/// literal is kept. A resolving session (the `secrets` feature) fills the secret in
+/// before this stage runs, so this provider does not walk the config. `LazySecret<T>`
+/// stays unresolved until it is read.
 pub struct DenySecrets;
 
 #[cgp_impl(DenySecrets)]

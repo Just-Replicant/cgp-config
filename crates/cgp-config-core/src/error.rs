@@ -9,6 +9,7 @@
 //! renders every field unconditionally, while these messages include optional parts
 //! (span, override chain, "did you mean") and must suppress text on secret paths.
 
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -770,6 +771,12 @@ impl RedactedRef {
     #[must_use]
     pub fn new(reference: &str) -> Self {
         let (scheme, rest) = reference.split_once(':').unwrap_or(("unknown", reference));
+        Self::digested(scheme, rest)
+    }
+
+    /// A digest of `rest` under `scheme`. `rest` is not stored.
+    #[must_use]
+    pub fn digested(scheme: &str, rest: &str) -> Self {
         Self {
             scheme: String::from(scheme),
             shown: Shown::Digest(fnv1a64(rest.as_bytes())),
@@ -789,6 +796,112 @@ impl RedactedRef {
     #[must_use]
     pub fn scheme(&self) -> &str {
         &self.scheme
+    }
+
+    /// Parses the [`Display`](Self) form back into a reference.
+    ///
+    /// A digest form (`scheme:<redacted #hex>`) keeps the digest. A name form keeps the
+    /// name. Anything else is `None`.
+    #[must_use]
+    pub fn from_display(text: &str) -> Option<Self> {
+        let (scheme, rest) = text.split_once(':')?;
+        if scheme.is_empty() || rest.is_empty() {
+            return None;
+        }
+        if let Some(hex) = rest
+            .strip_prefix("<redacted #")
+            .and_then(|body| body.strip_suffix('>'))
+        {
+            if hex.len() != 16 {
+                return None;
+            }
+            let digest = u64::from_str_radix(hex, 16).ok()?;
+            return Some(Self {
+                scheme: String::from(scheme),
+                shown: Shown::Digest(digest),
+            });
+        }
+        if rest.contains('<') || rest.contains('>') {
+            return None;
+        }
+        Some(Self::with_name(scheme, rest))
+    }
+}
+
+/// Prefix of a serde `custom` error that carries a secret-session [`ConfigError`].
+///
+/// `Secret<T>` cannot name the deserializer's error type, so a session failure travels
+/// as this message and the value deserializer turns it back into the original variant.
+/// The message never contains secret bytes.
+const SECRET_SESSION_PREFIX: &str = "\u{0}cgp-config/secret";
+
+/// Encodes a secret-session error for `serde::de::Error::custom`.
+///
+/// Variants that are not session failures return `None`.
+#[must_use]
+pub fn secret_session_message(error: &ConfigError) -> Option<String> {
+    let body = match error {
+        ConfigError::SecretsDenied => String::from("secrets-denied"),
+        ConfigError::SecretDenied { reference } => {
+            alloc::format!("secret-denied\u{0}{reference}")
+        }
+        ConfigError::Io { origin, message } => {
+            alloc::format!("io\u{0}{origin}\u{0}{message}")
+        }
+        ConfigError::Encoding { origin } => alloc::format!("encoding\u{0}{origin}"),
+        ConfigError::LimitExceeded { what, limit } => {
+            alloc::format!("limit\u{0}{what}\u{0}{limit}")
+        }
+        ConfigError::Missing { path, expected } => {
+            alloc::format!("missing\u{0}{path}\u{0}{expected}")
+        }
+        _ => return None,
+    };
+    Some(alloc::format!("{SECRET_SESSION_PREFIX}\u{0}{body}"))
+}
+
+/// The [`ConfigError`] stored by [`secret_session_message`], or `None` when `message` is
+/// not one.
+#[must_use]
+pub fn parse_secret_session_error(message: &str) -> Option<ConfigError> {
+    let rest = message.strip_prefix(SECRET_SESSION_PREFIX)?;
+    let mut parts = rest.split('\u{0}');
+    if parts.next() != Some("") {
+        return None;
+    }
+    match parts.next()? {
+        "secrets-denied" => Some(ConfigError::SecretsDenied),
+        "secret-denied" => {
+            let shown = parts.next()?;
+            Some(ConfigError::SecretDenied {
+                reference: RedactedRef::from_display(shown)?,
+            })
+        }
+        "io" => {
+            let label = parts.next()?;
+            let text = parts.next()?.to_owned();
+            Some(ConfigError::io(Origin::custom(label), text))
+        }
+        "encoding" => Some(ConfigError::Encoding {
+            origin: Origin::custom(parts.next()?),
+        }),
+        "limit" => {
+            let what = match parts.next()? {
+                "max_bytes" => "max_bytes",
+                "max_depth" => "max_depth",
+                "max_keys" => "max_keys",
+                "max_provenance" => "max_provenance",
+                _ => return None,
+            };
+            let limit = parts.next()?.parse().ok()?;
+            Some(ConfigError::limit_exceeded(what, limit))
+        }
+        "missing" => {
+            let path = crate::KeyPath::parse(parts.next()?).ok()?;
+            let expected = parts.next()?.to_owned();
+            Some(ConfigError::missing(path, expected))
+        }
+        _ => None,
     }
 }
 

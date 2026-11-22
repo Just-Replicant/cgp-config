@@ -61,6 +61,39 @@ impl fmt::Display for LayerSkipped {
     }
 }
 
+/// A load finished. The fingerprint is the FNV-1a 64 of the canonical redacted JSON
+/// ([`LoadReport::fingerprint`](crate::LoadReport::fingerprint)); `origin` is the winning
+/// origin of the root. The detail carries no values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ConfigLoaded {
+    /// The winning origin of the root node.
+    pub origin: Origin,
+    /// [`LoadReport::fingerprint`](crate::LoadReport::fingerprint), as a number.
+    pub fingerprint: u64,
+}
+
+impl ConfigLoaded {
+    /// A detail.
+    #[must_use]
+    pub fn new(origin: Origin, fingerprint: u64) -> Self {
+        Self {
+            origin,
+            fingerprint,
+        }
+    }
+}
+
+impl fmt::Display for ConfigLoaded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "config loaded from {} fingerprint {:016x}",
+            self.origin, self.fingerprint
+        )
+    }
+}
+
 /// Drops every detail. The preset logger.
 pub struct NoopLogger;
 
@@ -85,5 +118,10 @@ mod tests {
             LayerSkipped::new(Origin::file("app.local.toml")).to_string(),
             "config source skipped (absent): app.local.toml"
         );
+        let loaded = ConfigLoaded::new(Origin::file("app.toml"), 0xabc);
+        let text = loaded.to_string();
+        assert!(text.contains("app.toml"), "{text}");
+        assert!(text.contains("0000000000000abc"), "{text}");
+        assert!(!text.contains("password"));
     }
 }

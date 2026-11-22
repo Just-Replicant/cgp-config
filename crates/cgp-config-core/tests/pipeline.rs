@@ -10,7 +10,7 @@ use cgp_config_core::components::*;
 use cgp_config_core::{
     CollectInOrder, ConfigError, DefaultLoadLimits, DenySecrets, IdentityLayer, IgnoreWarnings,
     KeyPath, LoadLayered, LoadLimits, LoadLimitsField, LoadReport, LoadWarning, NoInterpolation,
-    NoValidation, ReportOnLoader, StaticKeyPath, config_check,
+    NoSecretSession, NoValidation, ReportOnLoader, StaticKeyPath, config_check,
 };
 use cgp_fork::core::error::{ErrorRaiserComponent, ErrorTypeProviderComponent};
 use cgp_fork::extra::error::RaiseFrom;
@@ -155,6 +155,7 @@ delegate_components! {
         InterpolatorComponent: NoInterpolation,
         ConfigDeserializerComponent: PairsToLimits,
         SecretsResolverComponent: DenySecrets,
+        SecretSessionComponent: NoSecretSession,
         ConfigValidatorComponent: NoValidation,
         LoadLimitsComponent: LoadLimitsField,
         LoadReportComponent: ReportOnLoader,
@@ -278,6 +279,7 @@ delegate_components! {
         InterpolatorComponent: NoInterpolation,
         ConfigDeserializerComponent: PairsToLimits,
         SecretsResolverComponent: DenySecrets,
+        SecretSessionComponent: NoSecretSession,
         ConfigValidatorComponent: NoValidation,
         LoadLimitsComponent: DefaultLoadLimits,
         LoadReportComponent: IgnoreWarnings,
