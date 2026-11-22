@@ -126,6 +126,8 @@
 //! | `clap` | no | `--config`, `--profile`, `--env-prefix`, `--set` for clap, and `config_command()` (`TwelveFactorCli`) |
 //! | `interpolate` | no | `${VAR}` / `${path}` in opted-in fields (`InterpolatingPreset`) |
 //! | `validate-garde`, `validate-validator` | no | `ValidateWithGarde`, `ValidateWithValidator` |
+//! | `secrets` | no | `Secret<T>`, `LazySecret<T>`, `env:` / `file:` / `docker:` resolvers, `SecretsPreset` |
+//! | `miette` | no | `ConfigDiagnostic` (secret spans suppress the snippet) |
 //! | `anyhow`, `eyre`, `std-error` | no | the fork's error-type providers |
 //! | `tokio`, `smol` | no | the fork's async runtime providers (used by reload in 0.2) |
 //! | `mock`, `log-tracing`, `inspect` | no | the fork's features of the same name |
@@ -145,6 +147,8 @@ pub use cgp_config_derive::ConfigSection;
 pub use cgp_config_formats as formats;
 #[cfg(feature = "clap")]
 pub use cgp_config_providers::cli;
+#[cfg(feature = "miette")]
+pub use cgp_config_providers::diagnostic;
 #[cfg(feature = "dotenv")]
 pub use cgp_config_providers::dotenv;
 #[cfg(feature = "std")]
@@ -153,9 +157,16 @@ pub use cgp_config_providers::loader::{LoadSection, Loaded, from_defaults};
 pub use cgp_config_providers::loader::{from_json_str, from_json_str_with};
 #[cfg(all(feature = "std", feature = "toml"))]
 pub use cgp_config_providers::loader::{from_toml_str, from_toml_str_with};
+#[cfg(feature = "secrets")]
+pub use cgp_config_providers::secrets;
 #[cfg(feature = "std")]
 pub use cgp_config_providers::{
     bootstrap, env, file, layers, loader, location, presets, read, sources, validate,
+};
+#[cfg(feature = "secrets")]
+pub use cgp_config_secrets::{
+    DockerSecret, EnvSecret, FileSecret, LazySecret, MockSecret, MockSecretSchemes,
+    OpenMockSession, Secret, SecretMap, SecretRoots, StdSecretSchemes, serialize_redacted,
 };
 #[cfg(feature = "alloc")]
 pub use cgp_config_value::{
@@ -170,6 +181,52 @@ pub use cgp_config_value::{InterpolateOptedIn, interpolate};
 
 #[cfg(feature = "derive")]
 pub mod derive;
+
+/// Twelve-factor load without a hand-written context.
+///
+/// [`load`](self::quick::load) reads the process environment and searches the filesystem.
+/// Libraries do not call it. Tests call [`load_from`](self::quick::load_from).
+///
+/// ```
+/// use cgp_config::prelude::*;
+///
+/// #[derive(Debug, PartialEq, serde::Deserialize, ConfigSection)]
+/// struct AppConfig {
+///     #[config(default = 8080)]
+///     port: u16,
+///     #[config(default = "demo")]
+///     name: String,
+/// }
+///
+/// let (config, report): (AppConfig, _) = cgp_config::quick::load_from(
+///     "myapp",
+///     EnvSnapshot::from_iter([("MYAPP__PORT", "7000")]),
+///     [("myapp.toml", "\"$version\" = 1\nname = \"from-file\"\n")],
+/// )?;
+/// assert_eq!((config.port, config.name.as_str()), (7000, "from-file"));
+/// assert!(report.warnings().iter().all(|warning| matches!(
+///     warning,
+///     LoadWarning::DocumentVersion { version: 1, .. }
+/// )));
+/// # Ok::<(), ConfigError>(())
+/// ```
+#[cfg(all(feature = "std", feature = "derive", feature = "toml"))]
+pub mod quick {
+    #[doc(inline)]
+    pub use cgp_config_providers::loader::LoaderBuilder;
+    #[doc(inline)]
+    pub use cgp_config_providers::quick::{load, load_from};
+}
+
+/// [`load`](crate::quick::load) and [`load_from`](crate::quick::load_from) without the
+/// derive (the runnable example above needs `derive` and `toml`).
+#[cfg(all(feature = "std", not(all(feature = "derive", feature = "toml"))))]
+pub mod quick {
+    #[doc(inline)]
+    pub use cgp_config_providers::loader::LoaderBuilder;
+    #[doc(inline)]
+    pub use cgp_config_providers::quick::{load, load_from};
+}
 
 /// The default value tree, under its short name.
 #[cfg(feature = "alloc")]
@@ -188,8 +245,8 @@ pub mod prelude {
         ValidationRule,
     };
     pub use cgp_config_core::{
-        ConfigMeta, ConfigMetaField, ConfigSection, LoadLimits, NoConfigMeta, StaticKeyPath,
-        UseConfigMeta, config_check,
+        ConfigMeta, ConfigMetaField, ConfigSection, FinalizeOptionalAll, LoadLimits, MissingFields,
+        NoConfigMeta, ProjectSection, StaticKeyPath, UseConfigMeta, config_check,
     };
     #[cfg(feature = "derive")]
     pub use cgp_config_derive::ConfigSection;
@@ -197,10 +254,14 @@ pub mod prelude {
     pub use cgp_config_formats::EnabledFormats;
     #[cfg(feature = "std")]
     pub use cgp_config_providers::bootstrap::{Bootstrap, Bootstrapped};
+    #[cfg(feature = "miette")]
+    pub use cgp_config_providers::diagnostic::ConfigDiagnostic;
     #[cfg(feature = "std")]
     pub use cgp_config_providers::layers::*;
     #[cfg(feature = "std")]
-    pub use cgp_config_providers::loader::{LoadSection, Loaded, MemoryLoader, StdLoader};
+    pub use cgp_config_providers::loader::{
+        LoadSection, Loaded, LoaderBuilder, MemoryLoader, StdLoader,
+    };
     #[cfg(feature = "std")]
     pub use cgp_config_providers::location::{ConfigLocation, SearchPath};
     #[cfg(feature = "std")]
@@ -211,6 +272,8 @@ pub mod prelude {
     };
     #[cfg(feature = "std")]
     pub use cgp_config_providers::sources::CliOverrides;
+    #[cfg(feature = "secrets")]
+    pub use cgp_config_secrets::{LazySecret, Secret, SecretMap, serialize_redacted};
     #[cfg(feature = "alloc")]
     pub use cgp_config_value::{
         AdjoinArrays, Admerge, AppendArrays, ConfigMap, ConfigValue, CoreConfigPreset, DeepMerge,
@@ -228,10 +291,11 @@ pub mod prelude {
 #[cfg(feature = "derive")]
 #[doc(hidden)]
 pub mod __private {
+    pub use cgp_config_core::units::{parse_bytes, parse_duration};
     pub use cgp_config_core::{
         AggregateError, CanValidateConfig, ConfigMeta, ConfigSection, ConstDefault, FieldMerge,
-        FieldMeta, NestedMeta, NestedShape, ParseKind, ReloadPolicy, ValidateSections, accumulate,
-        nested,
+        FieldMeta, FinalizeOptionalAll, MissingFields, NestedMeta, NestedShape, ParseKind,
+        ReloadPolicy, ValidateSections, accumulate, nested,
     };
     pub use cgp_fork::prelude::HasErrorType;
 }

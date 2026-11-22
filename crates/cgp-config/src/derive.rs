@@ -20,6 +20,8 @@
 //! | Attribute | Meaning |
 //! |---|---|
 //! | `section = "http"` | the section's default key |
+//! | `getter` | emit `Has{Name}Config` (`#[cgp_getter]`). `HttpConfig` and `Http` both emit `HasHttpConfig` |
+//! | `partial` | emit `{Name}Partial` and `FinalizeOptionalAll` |
 //! | `version = 2` | the schema version (default 1) |
 //! | `env_prefix = "APP"` | the default env prefix of a root config |
 //! | `deny_unknown` | unknown keys inside this section fail the load (also implied by `#[serde(deny_unknown_fields)]`) |
@@ -44,7 +46,7 @@
 //! | `parse = "bytes"` | `"10MiB"`, `"1KB"`, `512` into a byte count |
 //! | `nested` | the field is a section (`T`, `Option<T>`, `Vec<T>`, or a map of `T`) |
 //! | `flatten` | a nested section whose keys are written on the parent (instead of `serde(flatten)`) |
-//! | `mount = "key"` | the key in documents and env names, when it differs from serde's |
+//! | `mount = "key"` | the key in documents and env names, when it differs from serde's. Two fields with the same mount are a compile error |
 //! | `skip` | with `#[serde(skip)]`: the field is not configuration |
 //!
 //! Keys starting with `$` are reserved (`$version`, `$profiles`, `$include`).

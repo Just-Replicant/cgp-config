@@ -4,7 +4,7 @@ error: `migrate` is available from cgp-config 0.2 (schema migrations)
 4 | #[config(migrate(from = 1))]
   |          ^^^^^^^^^^^^^^^^^
 
-error: unknown `config` attribute `sectoin`; expected one of: section, version, env_prefix, deny_unknown, rename_all, crate (and `migrate`, from 0.2)
+error: unknown `config` attribute `sectoin`; expected one of: section, version, env_prefix, deny_unknown, rename_all, getter, partial, crate (and `migrate`, from 0.2)
  --> tests/ui/fail_attributes.rs:5:10
   |
 5 | #[config(sectoin = "typo")]

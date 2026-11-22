@@ -49,6 +49,10 @@ interpolate = ["alloc", "cgp-config-value/interpolate", "cgp-config-providers?/i
 # Validation adapters (users derive the library's trait themselves).
 validate-garde     = ["std", "cgp-config-providers/validate-garde"]
 validate-validator = ["std", "cgp-config-providers/validate-validator"]
+# `Secret<T>`, `LazySecret<T>`, env/file/docker resolvers, `SecretsPreset`.
+secrets = ["std", "dep:cgp-config-secrets", "cgp-config-providers/secrets"]
+# Labeled diagnostics (`ConfigDiagnostic`). Secret spans suppress the snippet.
+miette = ["std", "cgp-config-providers/miette"]
 
 # Pass-through features of the CGP fork.
 anyhow      = ["cgp-fork/anyhow"]
@@ -65,6 +69,7 @@ cgp-config-core      = { workspace = true }
 cgp-config-derive    = { workspace = true, optional = true }
 cgp-config-formats   = { workspace = true, optional = true }
 cgp-config-providers = { workspace = true, optional = true }
+cgp-config-secrets   = { workspace = true, optional = true }
 cgp-config-value     = { workspace = true, optional = true }
 cgp-fork             = { workspace = true }
 

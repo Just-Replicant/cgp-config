@@ -1,0 +1,5 @@
+error: key `http` is also used by `left` (keys and aliases must differ, ignoring ASCII case, so env names stay unambiguous)
+  --> tests/ui/fail_mounts.rs:13:5
+   |
+13 |     right: Http,
+   |     ^^^^^
