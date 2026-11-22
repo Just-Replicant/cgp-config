@@ -243,6 +243,7 @@ where
             }
             None => (value, None),
         };
+        self.note_loaded(crate::explain::stamp(&value));
         // When normalization or serde fails, the unknown keys of `deny_unknown` sections
         // (found from the schema) join that error, so one run reports every problem.
         let with_denied = |error: ConfigError| match meta {

@@ -308,7 +308,7 @@ impl DeserializeError {
     pub fn into_config_error(self) -> ConfigError {
         match self.inner {
             Inner::Located(error) => error,
-            Inner::Custom(message) => ConfigError::type_error(KeyPath::root(), message, None),
+            Inner::Custom(message) => interpret_custom(message, KeyPath::root(), None),
             Inner::Missing(field) => {
                 ConfigError::missing(KeyPath::root().join(field), String::new())
             }
@@ -417,6 +417,11 @@ fn unexpected(value: &ConfigValue) -> Unexpected<'_> {
     }
 }
 
+fn interpret_custom(message: String, path: KeyPath, meta: Option<Meta>) -> ConfigError {
+    cgp_config_core::parse_secret_session_error(&message)
+        .unwrap_or_else(|| ConfigError::type_error(path, message, meta))
+}
+
 impl<'v, 'p> ValueDeserializer<'v, 'p> {
     /// Attaches the current path and metadata to an error that has none yet.
     pub(crate) fn locate(&self, error: DeserializeError) -> DeserializeError {
@@ -424,7 +429,7 @@ impl<'v, 'p> ValueDeserializer<'v, 'p> {
         let meta = || self.value.meta().clone();
         let located = match error.inner {
             Inner::Located(_) => return error,
-            Inner::Custom(message) => ConfigError::type_error(path(), message, Some(meta())),
+            Inner::Custom(message) => interpret_custom(message, path(), Some(meta())),
             Inner::Missing(field) => ConfigError::missing(path().join(field), String::new()),
             Inner::UnknownField { field, expected } => {
                 // Raised either by the key itself (serde's field visitor; `self` is then the

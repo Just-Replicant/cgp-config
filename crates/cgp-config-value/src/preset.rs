@@ -14,6 +14,7 @@
 //! | `ConfigDeserializerComponent` | [`SerdeWithProvenance<WarnUnknownKeys>`](crate::SerdeWithProvenance) (unknown keys warn) |
 //! | `ConfigValidatorComponent` | `NoValidation` |
 //! | `SecretsResolverComponent` | `DenySecrets` |
+//! | `SecretSessionComponent` | `NoSecretSession` (references fail while deserializing; feature `secrets` overrides this) |
 //! | `LoadLimitsComponent` | `DefaultLoadLimits` |
 //! | `LoadReportComponent` | `ReportOnLoader` (needs a `load_report: LoadReport` field) |
 //!
@@ -53,8 +54,8 @@ pub mod __entries {
         ConfigValueTypeProviderComponent, DefaultLoadLimits, DenySecrets,
         EmptyConfigValueComponent, InterpolatorComponent, LayerCollectorComponent,
         LayerMergerComponent, LayerPreparerComponent, LoadLimitsComponent, LoadReportComponent,
-        NoConfigMeta, NoInterpolation, NoValidation, ReportOnLoader, RootConfigMetaComponent,
-        SecretsResolverComponent,
+        NoConfigMeta, NoInterpolation, NoSecretSession, NoValidation, ReportOnLoader,
+        RootConfigMetaComponent, SecretSessionComponent, SecretsResolverComponent,
     };
     pub use cgp_fork::prelude::{UseDelegate, UseType};
 
@@ -117,6 +118,7 @@ cgp_preset! {
         ConfigDeserializerComponent: SerdeWithProvenance<WarnUnknownKeys>,
         ConfigValidatorComponent: NoValidation,
         SecretsResolverComponent: DenySecrets,
+        SecretSessionComponent: NoSecretSession,
         LoadLimitsComponent: DefaultLoadLimits,
         LoadReportComponent: ReportOnLoader,
         RootConfigMetaComponent: NoConfigMeta,

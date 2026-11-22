@@ -26,6 +26,7 @@ extern crate alloc;
 
 pub mod de;
 mod defaults;
+mod explain;
 #[cfg(feature = "interpolate")]
 #[cfg_attr(docsrs, doc(cfg(feature = "interpolate")))]
 pub mod interpolate;
