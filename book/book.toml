@@ -1,0 +1,7 @@
+[book]
+title = "cgp-config"
+language = "en"
+src = "src"
+
+[build]
+create-missing = false

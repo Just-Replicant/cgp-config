@@ -8,12 +8,15 @@ how layers merge, how values deserialize, and how the result is validated. Every
 CGP component with swappable providers, so a test context, a staging binary, and a
 production binary can wire different sources and checks with no `cfg!` sprawl and no `dyn`.
 
-> **Status: 0.1.0-alpha.1 (phases P0–P3 of the [design plan](docs/design-plan.md)).**
+> **Status: 0.1.0-alpha.1 (phases P0–P5 of the [design plan](docs/design-plan.md)).**
 > The component set, value tree, merge, deserializer, errors, `CoreConfigPreset` (P1);
 > TOML/JSON formats, file/env/`.env`/CLI sources, `Bootstrap`, and the twelve-factor
 > presets (P2); `#[derive(ConfigSection)]`, unit parsers, and the validation combinators
-> and adapters (P3) are in place. Secrets (P4) and the rest of the plan are not
-> implemented yet.
+> and adapters (P3); `Secret<T>` / `LazySecret<T>`, the `env:` / `file:` / `docker:`
+> resolvers, redaction, fingerprints, `explain`, and the `miette` diagnostic (P4);
+> `#[config(getter)]` / `#[config(partial)]`, `ProjectSection`, `quick::load`, the
+> multi-crate example, and the 0.1 book (P5) are in place. Reload, migrations, and
+> satellite crates (P6–P8) are not implemented yet.
 
 ## What is here
 
@@ -23,9 +26,12 @@ production binary can wire different sources and checks with no `cfg!` sprawl an
 | [`cgp-config-core`](crates/cgp-config-core) | `#![no_std]` component traits, `KeyPath`, `Origin`/`Meta` provenance, `ConfigError`, `LoadReport`/`LoadWarning`, `LoadLimits`, the built-in source markers, pipeline providers (`LoadLayered`, `CollectInOrder`, ...), `config_check!` |
 | [`cgp-config-value`](crates/cgp-config-value) | `ConfigValue` (`Arc` nodes with `Meta`), merge policies (`DeepMerge`, `ShallowReplace`, `AppendArrays`, `JoinBaseWins`, `AdjoinArrays`, `MergeArraysByKey`), the provenance-aware serde deserializer, `PrepareFileLayer`, `CoreConfigPreset` with its `DefaultPreparers` table |
 | [`cgp-config-formats`](crates/cgp-config-formats) | `#![no_std]` TOML and JSON parsers with spans and duplicate-key rejection, redacting renderers, `EnabledFormats` |
-| [`cgp-config-providers`](crates/cgp-config-providers) | `Bootstrap`, file search, file/env/`.env`/CLI sources, `TwelveFactorPreset` and its variants, `StdLoader`/`MemoryLoader`, garde/validator adapters |
+| [`cgp-config-providers`](crates/cgp-config-providers) | `Bootstrap`, file search, file/env/`.env`/CLI sources, `TwelveFactorPreset` and its variants, `SecretsPreset` (feature `secrets`), `StdLoader`/`MemoryLoader`, garde/validator adapters, `ConfigDiagnostic` (feature `miette`) |
 | [`cgp-config-derive`](crates/cgp-config-derive) | `#[derive(ConfigSection)]` (implementation in `cgp-config-derive-impl`) |
+| [`cgp-config-secrets`](crates/cgp-config-secrets) | `Secret<T>`, `LazySecret<T>`, `env:` / `file:` / `docker:` resolvers (feature `secrets` on the facade) |
 | `fuzz` | cargo-fuzz targets (not in the workspace) |
+| `examples/multi-crate-workspace` | `no_std` HTTP and database sections, and an app that mounts both (not published) |
+| `book` | The 0.1 guide (`cargo xtask book` when `mdbook` is installed) |
 | `xtask` | `cargo xtask ci` and friends (not published) |
 
 The load pipeline is **collect** (for each source: load → prepare → merge onto the

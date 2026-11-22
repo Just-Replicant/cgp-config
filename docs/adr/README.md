@@ -4,6 +4,8 @@
 |---|---|---|
 | [0001](0001-prototype-findings.md) | Prototype findings and where the design plan supersedes the prototype | Accepted |
 | [0002](0002-phase-2-3-implementation.md) | Phase 2 and 3 implementation choices | Accepted |
+| [0003](0003-phase-4-secrets.md) | Phase 4 secrets and diagnostics | Accepted |
+| [0004](0004-phase-5-libraries.md) | Phase 5 getters, quick load, and the 0.1 book | Accepted |
 
 New records copy the headings of 0001 (Context, Decision, Consequences) and take the next
 number. A record is never edited after acceptance except to mark it superseded, or to

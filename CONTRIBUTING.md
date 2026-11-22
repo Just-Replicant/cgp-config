@@ -22,9 +22,12 @@ and no default features), `test` (all features plus each feature tier), `hack`
 (builds for `thumbv7em-none-eabihf`), `docs` (broken intra-doc links denied), and `deny`.
 Miri (`cargo xtask miri`, with isolation on and proptest failure persistence off), the
 coverage gate (`cargo xtask coverage`, 95% lines on `cgp-config-value`; core is printed,
-not gated), and `cargo xtask semver` (cargo-semver-checks against the PR base; advisory
-until 0.1.0) run in their own CI jobs. The nightly workflow also runs
-`cargo xtask fork-main`, which builds and tests against `cgp-fork`'s main branch.
+not gated), and `cargo xtask semver` (cargo-semver-checks against `SEMVER_BASELINE`,
+default `origin/main`; advisory until 0.1.0; that revision is the baseline, not a tag)
+run in their own CI jobs. The nightly workflow also runs `cargo xtask fork-main`, which
+builds and tests against `cgp-fork`'s main branch. `cargo xtask book` builds `book/`
+when `mdbook` is installed and is not part of `ci`. The 0.1 surface those checks cover
+is recorded in the book's semver page and in ADR-004.
 
 ## Rules of the code base
 

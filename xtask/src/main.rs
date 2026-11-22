@@ -13,6 +13,7 @@
 //! cargo xtask coverage    # llvm-cov: gate 95% lines on value; core + value printed only
 //! cargo xtask semver      # cargo-semver-checks against $SEMVER_BASELINE (default origin/main)
 //! cargo xtask fork-main   # build and test against cgp-fork's main branch (early warning)
+//! cargo xtask book        # mdbook build of book/ (not part of ci)
 //! ```
 //!
 //! The tools beyond rustup components (`cargo-hack`, `cargo-deny`, `cargo-llvm-cov`,
@@ -37,6 +38,7 @@ const PUBLISHED: &[&str] = &[
     "cgp-config-providers",
     "cgp-config-derive",
     "cgp-config-derive-impl",
+    "cgp-config-secrets",
 ];
 
 type Step = fn() -> Result<(), String>;
@@ -61,6 +63,7 @@ const STEPS: &[(&str, Step, &str)] = &[
         fork_main,
         "build and test against cgp-fork main",
     ),
+    ("book", book, "mdbook build of book/ (not part of ci)"),
 ];
 
 /// Steps of `ci`. Miri, coverage, semver, and fork-main run in their own CI jobs.
@@ -247,6 +250,11 @@ fn hack() -> Result<(), String> {
             "--each-feature",
             "--no-dev-deps",
         ],
+    )?;
+    // std-only and featureless; kept out of `nostd`.
+    cargo(
+        None,
+        &["hack", "check", "-p", "cgp-config-secrets", "--no-dev-deps"],
     )
 }
 
@@ -409,4 +417,26 @@ fn fork_main() -> Result<(), String> {
     });
     fs::write(lock_path, lock).map_err(|error| format!("cannot restore Cargo.lock: {error}"))?;
     result
+}
+
+fn book() -> Result<(), String> {
+    let found = Command::new("mdbook")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !found {
+        return Err(
+            "`mdbook` is not installed; install with `cargo install mdbook --locked`".into(),
+        );
+    }
+    eprintln!("    $ mdbook build book");
+    let status = Command::new("mdbook")
+        .args(["build", "book"])
+        .status()
+        .map_err(|error| format!("cannot run mdbook: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("`mdbook build book` failed ({status})"))
+    }
 }

@@ -8,6 +8,40 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **P5 — libraries, quick load, and the 0.1 book.**
+  - `#[config(getter)]` emits `Has{Name}Config` (`#[cgp_getter]`). A trailing `Config`
+    is stripped when the remainder starts with an uppercase letter, so `HttpConfig` and
+    `Http` both emit `HasHttpConfig` / `http_config`. `#[config(partial)]` emits
+    `{Name}Partial` and `FinalizeOptionalAll`. Both stay opt-in.
+  - `ProjectSection<Path!(@...)>` projects a nested section out of a context that holds
+    it (`WithProvider`, because `#[cgp_getter]` implements `UseField` and `WithProvider`).
+    `Path!` requires the leading `@`.
+  - `cgp_config::quick::load` and `load_from`, and `StdLoader::builder()`. The prefix is
+    stored without a trailing `_`. `load_from` reads an `EnvSnapshot` and an in-memory
+    file map.
+  - `examples/multi-crate-workspace`: two `no_std` libraries and an app that mounts both.
+    Duplicate mounts and duplicate `env_raw` fail the derive.
+  - The 0.1 book in `book/` (guide, cookbook, reference, one page per `ConfigError::code()`).
+    `cargo xtask semver` stays advisory against `origin/main`. See ADR-004.
+- **P4 — secrets and diagnostics.**
+  - `cgp-config-secrets` (std, facade feature `secrets`): `Secret<T>` (`secrecy::SecretBox`,
+    `Debug`/`Display` are `[REDACTED]`, no `Serialize` unless `serialize_redacted`),
+    `LazySecret<T>`, `env:` / `file:` / `docker:` resolvers, `HasSecretRoots`
+    (`CREDENTIALS_DIRECTORY`, the config directory, `/run/secrets`). Secret bytes are
+    zeroized. A reference resolves while `Secret<T>` deserializes, from a thread-local
+    session; the default session is deny.
+  - `SecretsPreset` and `MockSecretsPreset` (`cgp-config-providers`, feature `secrets`).
+    `StdLoader` stays on `TwelveFactorPreset`; opt in on your own context.
+    `from_toml_str` / `from_json_str` keep `DenySecrets` (literals work, references are
+    `config::secrets_denied`).
+  - `LoadReport::fingerprint` (FNV-1a 64 of canonical redacted JSON), `explain`, and
+    `dump_json`. `ConfigLoaded` logs the winning origin and the fingerprint, never values.
+  - Feature `miette`: `ConfigDiagnostic`. Secret spans suppress the snippet.
+  - A group- or world-readable file that holds a secret reference, or a schema secret
+    field with a value, warns `config::warn::secret_world_readable`.
+  - `#[derive(ConfigSection)]` marks a field secret when its type is `Secret` or
+    `LazySecret` (after `Option` / `Vec` / `Box` / `Arc` / `Rc`), as well as
+    `#[config(secret)]`.
 - **P2 — formats, sources, presets.**
   - `cgp-config-formats` (`#![no_std]` + `alloc`): TOML (feature `toml`, default) and a
     strict JSON parser (feature `json`) with a span on every node, duplicate keys

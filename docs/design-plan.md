@@ -853,30 +853,21 @@ pub trait CanGenerateSchema<Config> {
 
 ```rust
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, cgp_config::ConfigSection)]
-#[config(section = "http")]
+#[config(section = "http", getter)]
 pub struct HttpConfig {
-    /// Port to bind.
+    /// Port to bind. Under mount `http` and prefix `APP` the variable is `APP__HTTP__PORT`.
     #[config(default = 8080)]
     pub port: u16,
     #[config(default = "0.0.0.0")]
     pub host: String,
-    /// Suffix. The app prefix and the mount path produce APP__HTTP__PORT.
-    #[config(env = "PORT")]
-    pub port_from_env_example: Option<u16>,
     #[config(secret)]
     pub tls_key: Option<Secret<String>>,
 }
-
-// Opt-in. #[cgp_getter] returns a reference borrowed from the context.
-#[cgp_getter]
-pub trait HasHttpConfig {
-    fn http_config(&self) -> &HttpConfig;
-}
 ```
 
-`#[config(env = "PORT")]` replaces the field segment. Under mount `http` and prefix `APP` the variable is `APP__HTTP__PORT`. It is not the process-global `PORT`. A true global name is `#[config(env_raw = "PORT")]`, and two `env_raw` values that resolve equal inside one root are a compile error.
+`#[config(getter)]` emits `HasHttpConfig` and `fn http_config(&self) -> &HttpConfig`. A name that already ends in `Config` (`HttpConfig`, and `Http`) both become `HasHttpConfig`. The default derive does not emit the trait.
 
-`#[config(getter)]` asks the derive to emit `HasHttpConfig`. The default derive does not emit it.
+`#[config(env = "PORT")]` replaces the field segment of that one field. Under mount `http` and prefix `APP` the variable is `APP__HTTP__PORT`. It is not the process-global `PORT`. A true global name is `#[config(env_raw = "PORT")]`, and two `env_raw` values that resolve equal inside one root are a compile error. Do not put `env = "PORT"` on a second field in a section that already has a key `port`: env segments fold case, so the two names are the same key.
 
 Library logic:
 
@@ -890,13 +881,12 @@ impl Server where Self: HasHttpConfig + CanLog<String> {
 }
 ```
 
-Because `#[cgp_getter]` generates `UseField<Tag>`, `UseFields`, and `WithProvider<P>`, the app can:
+Because `#[cgp_getter]` generates providers only for `UseField` and `WithProvider<FieldGetter>`, the app wires:
 
-* store `http: HttpConfig` and wire `UseField<Symbol!("http")>`;
-* project from a request context that holds `Arc<AppConfig>` (a hand-written provider, or `ProjectSection` once P5's compile test proves the `Path!` form);
-* keep the long-lived process state in `ConfigHandle` and copy `Arc<AppConfig>` into the request context at the start of the request.
+* `UseField<Symbol!("http")>` when the context stores `http: HttpConfig` directly;
+* `WithProvider<ProjectSection<Path!(@config.http)>>` when the context stores `config: Arc<AppConfig>` (or `&AppConfig`). `Path!` requires the leading `@`. `ProjectSection` walks `HasField` / `MapField` and returns a reference. It does not borrow through `ArcSwap`.
 
-`ProjectSection<Path!(config.http)>` is a P5 deliverable. The compile test is part of acceptance. If the `Path!` grammar cannot express it, the example ships an explicit `#[cgp_provider]` with the same behavior, and the plan's example is updated to that provider. The example does not ship a getter that borrows through `ArcSwap`.
+`HttpConfigGetterComponent` is the component name `#[cgp_getter]` emits next to `HasHttpConfig`. The long-lived process will hold `ConfigHandle` (0.2) and copy `Arc<AppConfig>` into the request context at the start of the request.
 
 Optional validator in the library:
 
@@ -921,9 +911,9 @@ where
 #[derive(Debug, PartialEq, serde::Deserialize, ConfigSection)]
 #[config(version = 2)]
 pub struct AppConfig {
-    #[config(mount = "http")]
+    #[config(nested, mount = "http")]
     pub http: http_server::HttpConfig,
-    #[config(mount = "db")]
+    #[config(nested, mount = "db")]
     pub db: db_pool::DbConfig,
     pub name: String,
 }
@@ -974,14 +964,14 @@ Request context once reload exists (0.2):
 
 ```rust
 #[derive(HasField)]
-pub struct Request<'a> {
-    config: &'a AppConfig, // borrowed from Arc<AppConfig> held by the request
+pub struct Request {
+    config: Arc<AppConfig>,
 }
 
 delegate_components! {
-    Request<'_> {
-        HttpConfigGetterComponent: ProjectSection<Path!(config.http)>,
-        DbConfigGetterComponent: ProjectSection<Path!(config.db)>,
+    Request {
+        HttpConfigGetterComponent: WithProvider<ProjectSection<Path!(@config.http)>>,
+        DbConfigGetterComponent: WithProvider<ProjectSection<Path!(@config.db)>>,
     }
 }
 ```
@@ -1318,7 +1308,7 @@ Line-coverage gates apply to `cgp-config-value` and `cgp-config-core` (target 95
   1. **Quick:** `cgp_config::quick::load::<AppConfig>("myapp") -> Result<(AppConfig, LoadReport), ConfigError>`. Builds a loader with `TwelveFactorPreset`, takes one `EnvSnapshot` of the process environment, and follows the search order in §6.3. App-only. Documented as reading the process environment. Libraries do not call it. Doctests call `quick::load_from(snapshot, files)` instead.
   2. **Standard:** a loader context, `preset TwelveFactorPreset`, `config_check!`, and explicit entries that replace preset ones (`DenyUnknownKeys`, a validator table, `SecretsPreset`).
   3. **Advanced:** custom providers, `LoadLayeredAsync`, typed partial builders, satellite secret crates.
-* `Loader::builder().app_name("x").file("cfg.toml").env_prefix("X_").profile("prod")` fills the `HasField` struct. The builder signature does not expose CGP types.
+* `StdLoader::builder().app_name("x").file("cfg.toml").env_prefix("APP").profile("prod")` fills the loader. The prefix is stored without a trailing separator (`APP`, not `APP_` or `APP__`); a prefix that is empty or ends with `_` is rejected. The builder does not read the process environment unless `capture_env()` is called. Its signature does not expose CGP types.
 * Provider names read clearly in a wiring table: `LayerMergerComponent: DeepMerge`.
 
 `quick::load` search order is exactly §6.3. The app name is the `{app}` segment and the default prefix (`MYAPP` for `"myapp"`, so nested keys look like `MYAPP__HTTP__PORT`). Profile defaults to `default`.
@@ -1413,7 +1403,7 @@ Features are additive. `cargo hack` builds every feature (§10, §17). `docs.rs`
 * MSRV 1.99.
 * `no_std` target build of core.
 * `cargo-deny`, `cargo-audit`.
-* `cargo-semver-checks` once a baseline exists (the 0.1 tag).
+* `cargo xtask semver` (`cargo-semver-checks` against `SEMVER_BASELINE`, default `origin/main`). Advisory until 0.1.0. The baseline is that revision, not a tag invented for the alpha. The surface it covers is the P1–P5 public API in §16.
 * trybuild UI tests pinned to a toolchain.
 * Doc build with `-D rustdoc::broken_intra_doc_links`.
 * Coverage gate on value and core only.
@@ -1422,7 +1412,7 @@ Features are additive. `cargo hack` builds every feature (§10, §17). `docs.rs`
 
 **0.2 adds:** the compile-time median gate (§11) and the criterion regression gate.
 
-**Docs (ship with 0.1, covering the 0.1 surface):** mdBook guide (quick start, library authors, app authors, 12-factor, secrets, `no_std`), cookbook (CLI tools, multi-crate workspaces, docker secrets), reference (components, providers, presets, attributes, the pipeline), and an error catalog with one page per `code`. Reload, migrations, and templates are added to the book in the release that ships them. Snippets are doctests. A "Coming from config-rs / figment / confique" page states the env separator `__`, the warning policy for unknown keys, and the fact that we do not mutate the process environment.
+**Docs (the 0.1 surface):** the mdBook in `book/` (guide: quick start, library authors, app authors, 12-factor, secrets, `no_std`; cookbook: CLI tools, multi-crate workspaces, docker secrets, coming from config-rs / figment / confique; reference: components, providers, presets, attributes, the pipeline, the semver surface; one page per `ConfigError::code()`). Reload, migrations, and templates are added to the book in the release that ships them. Runnable snippets are crate doctests (`quick::load_from`, `ProjectSection`) and `examples/multi-crate-workspace`. The coming-from page states the env separator `__`, the warning policy for unknown keys, and the fact that we do not mutate the process environment. `cargo xtask book` builds the book when `mdbook` is installed; CI does not require it.
 
 ---
 
@@ -1440,6 +1430,8 @@ Features are additive. `cargo hack` builds every feature (§10, §17). `docs.rs`
 | **P7 Migrations, schema, templates** | 0.2 | 2 wk | `MigrationChain`, crash-safe `migrate --write`, root `$include`, `to_env_pairs`, schemars, TOML templates, Markdown, env listing | Template round-trips to defaults; v1→vN fixtures load; second `--write` is a no-op; kill -9 during write leaves the previous file (fault-injection test); an `$include` that escapes the directory is denied |
 | **P8 Satellites** | 0.3 | ongoing | HTTP, Consul, etcd, Vault, AWS, GCP, and an age/sops reader wrapper, as separate crates implementing the 0.1 traits | Mocked unit tests in those crates' PR CI; testcontainers on nightly |
 | **P9 1.0** | 1.0 | ongoing | API freeze of the 0.1/0.2 surface after two apps and two libraries, long fuzz, embedded example | No open P1 bugs; 1.0 RFC accepted |
+
+P5's shipped wiring is recorded in ADR-004: `Path!(@config.http)` inside `WithProvider<ProjectSection<...>>`, `#[config(getter)]` and `#[config(partial)]`, `cgp_config::quick::load` / `load_from`, `StdLoader::builder()` with a prefix that has no trailing `_`, and the 0.1 book in `book/`. The worked example is `examples/multi-crate-workspace`.
 
 Extra formats (YAML, JSON5, RON, INI) land as features whenever their parser is ready. They are not on the 0.1 critical path. YAML ships only with alias expansion disabled.
 

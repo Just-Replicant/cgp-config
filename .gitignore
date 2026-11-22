@@ -10,3 +10,5 @@
 # local developer overrides (TwelveFactorLocal reads these; never commit them)
 config.local.toml
 *.local.toml
+# mdbook output (`cargo xtask book`)
+/book/book
