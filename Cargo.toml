@@ -8,9 +8,10 @@ members = [
     "crates/cgp-config-providers",
     "crates/cgp-config-derive",
     "crates/cgp-config-derive-impl",
+    "crates/cgp-config-secrets",
     "xtask",
 ]
-# Crates from later phases (secrets, watch, schema, test) are added to `members` when
+# Crates from later phases (watch, schema, test) are added to `members` when
 # their phase starts. See docs/design-plan.md §5 and §18.
 
 [workspace.package]
@@ -33,6 +34,7 @@ cgp-config-formats     = { version = "=0.1.0-alpha.1", path = "crates/cgp-config
 cgp-config-providers   = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-providers", default-features = false }
 cgp-config-derive      = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-derive" }
 cgp-config-derive-impl = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-derive-impl" }
+cgp-config-secrets     = { version = "=0.1.0-alpha.1", path = "crates/cgp-config-secrets" }
 
 # The CGP fork. `compat-0.10` is in the fork's default set, so defaults stay off.
 # `cgp-config-core` asks for no extra feature; crates that need `alloc` add it.
@@ -56,6 +58,8 @@ quote       = { version = "1" }
 syn         = { version = "3", default-features = false, features = ["full", "parsing", "printing", "proc-macro", "derive", "clone-impls", "extra-traits"] }
 validator   = { version = "0.21", default-features = false }
 zeroize     = { version = "1.9", default-features = false, features = ["alloc"] }
+secrecy     = { version = "0.10", default-features = false }
+miette      = { version = "7", default-features = false }
 
 # Dev-only.
 anyhow   = { version = "1" }

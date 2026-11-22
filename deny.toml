@@ -23,6 +23,7 @@ exceptions = [
     { allow = ["AGPL-3.0-or-later"], crate = "cgp-config" },
     { allow = ["AGPL-3.0-or-later"], crate = "cgp-config-core" },
     { allow = ["AGPL-3.0-or-later"], crate = "cgp-config-value" },
+    { allow = ["AGPL-3.0-or-later"], crate = "cgp-config-secrets" },
 ]
 
 [licenses.private]

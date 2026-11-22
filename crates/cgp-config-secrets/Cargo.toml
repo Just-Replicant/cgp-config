@@ -1,0 +1,32 @@
+[package]
+name                 = "cgp-config-secrets"
+description          = "Secret<T>, lazy secrets, and the env, file, and docker resolvers for cgp-config."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+keywords.workspace     = true
+categories.workspace   = true
+readme               = "README.md"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+cgp-config-core = { workspace = true, features = ["std"] }
+cgp-fork        = { workspace = true, features = ["alloc"] }
+secrecy         = { workspace = true }
+serde           = { workspace = true }
+zeroize         = { workspace = true }
+
+[dev-dependencies]
+serde      = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tempfile   = { workspace = true }
+
+[lints]
+workspace = true
