@@ -9,6 +9,9 @@ members = [
     "crates/cgp-config-derive",
     "crates/cgp-config-derive-impl",
     "crates/cgp-config-secrets",
+    "examples/multi-crate-workspace/http-server",
+    "examples/multi-crate-workspace/db-pool",
+    "examples/multi-crate-workspace/app",
     "xtask",
 ]
 # Crates from later phases (watch, schema, test) are added to `members` when

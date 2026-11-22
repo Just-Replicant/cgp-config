@@ -1,0 +1,16 @@
+[package]
+name = "example-http-server"
+description = "HTTP section for the cgp-config multi-crate example. Depends on the facade with derive only and does not link std IO."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+cgp-config = { workspace = true, features = ["derive"] }
+cgp-fork = { workspace = true }
+serde = { workspace = true, features = ["derive", "alloc"] }
+
+[lints]
+workspace = true

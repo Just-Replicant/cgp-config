@@ -1,0 +1,18 @@
+[package]
+name = "example-multi-crate-app"
+description = "Application that mounts the HTTP and database sections and projects them with ProjectSection."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+cgp-config = { workspace = true, features = ["std", "derive", "toml"] }
+cgp-fork = { workspace = true }
+example-db-pool = { path = "../db-pool" }
+example-http-server = { path = "../http-server" }
+serde = { workspace = true, features = ["derive", "alloc"] }
+
+[lints]
+workspace = true

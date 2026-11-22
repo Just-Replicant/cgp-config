@@ -447,6 +447,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-db-pool"
+version = "0.0.0"
+dependencies = [
+ "cgp-config",
+ "cgp-fork",
+ "serde",
+]
+
+[[package]]
+name = "example-http-server"
+version = "0.0.0"
+dependencies = [
+ "cgp-config",
+ "cgp-fork",
+ "serde",
+]
+
+[[package]]
+name = "example-multi-crate-app"
+version = "0.0.0"
+dependencies = [
+ "cgp-config",
+ "cgp-fork",
+ "example-db-pool",
+ "example-http-server",
+ "serde",
+]
+
+[[package]]
 name = "eyre"
 version = "0.6.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
