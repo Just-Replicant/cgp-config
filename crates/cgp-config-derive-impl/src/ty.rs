@@ -28,6 +28,39 @@ fn args_of<'a>(ty: &'a Type, names: &[&str]) -> Option<Vec<&'a Type>> {
     )
 }
 
+/// Whether `ty` is `Secret<T>` or `LazySecret<T>`, including through `Option`, `Vec`,
+/// `Box`, and `Arc`.
+pub(crate) fn is_secret_container(ty: &Type) -> bool {
+    let mut current = ty;
+    loop {
+        if let Some(inner) = option_inner(current)
+            .or_else(|| seq_inner(current))
+            .or_else(|| box_inner(current))
+        {
+            current = inner;
+            continue;
+        }
+        break;
+    }
+    let Type::Path(path) = current else {
+        return false;
+    };
+    if path.qself.is_some() {
+        return false;
+    }
+    let Some(last) = path.path.segments.last() else {
+        return false;
+    };
+    last.ident == "Secret" || last.ident == "LazySecret"
+}
+
+fn box_inner(ty: &Type) -> Option<&Type> {
+    match args_of(ty, &["Box", "Arc", "Rc"])?.as_slice() {
+        [inner] => Some(inner),
+        _ => None,
+    }
+}
+
 /// `T` of `Option<T>`.
 pub(crate) fn option_inner(ty: &Type) -> Option<&Type> {
     match args_of(ty, &["Option"])?.as_slice() {

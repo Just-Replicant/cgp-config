@@ -159,11 +159,12 @@ pub(crate) struct ContainerAttrs {
     pub(crate) env_prefix: Option<Spanned<String>>,
     pub(crate) deny_unknown: Option<Span>,
     pub(crate) rename_all: Option<Spanned<RenameRule>>,
+    pub(crate) getter: Option<Span>,
+    pub(crate) partial: Option<Span>,
     pub(crate) krate: Option<Spanned<syn::Path>>,
 }
 
-const CONTAINER_KEYS: &str =
-    "section, version, env_prefix, deny_unknown, rename_all, crate (and `migrate`, from 0.2)";
+const CONTAINER_KEYS: &str = "section, version, env_prefix, deny_unknown, rename_all, getter, partial, crate (and `migrate`, from 0.2)";
 
 impl ContainerAttrs {
     pub(crate) fn parse(attrs: &[Attribute], errors: &mut Errors) -> Self {
@@ -211,6 +212,8 @@ impl ContainerAttrs {
                         })?;
                         set(&mut out.rename_all, &meta, "rename_all", rule)
                     }
+                    "getter" => flag(&mut out.getter, &meta, "getter"),
+                    "partial" => flag(&mut out.partial, &meta, "partial"),
                     "crate" => {
                         let lit = string(&meta)?;
                         let path = lit.parse::<syn::Path>()?;

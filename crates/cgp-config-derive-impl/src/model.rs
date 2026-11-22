@@ -2,7 +2,7 @@
 
 use proc_macro2::Span;
 use syn::spanned::Spanned;
-use syn::{Data, DeriveInput, Fields, Generics, Ident, Type};
+use syn::{Data, DeriveInput, Fields, Generics, Ident, Type, Visibility};
 
 use crate::attrs::{
     ContainerAttrs, DefaultValue, Errors, FieldAttrs, SerdeContainer, SerdeField, doc,
@@ -23,6 +23,15 @@ pub(crate) struct NestedField {
     pub(crate) section: Type,
 }
 
+/// How the section struct is declared, so a partial can be built back into it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StructShape {
+    /// `struct Name;`
+    Unit,
+    /// `struct Name { ... }`, including an empty brace struct.
+    Named,
+}
+
 /// One field of the section, as `FieldMeta` will describe it.
 pub(crate) struct Field {
     pub(crate) ident: Ident,
@@ -30,6 +39,7 @@ pub(crate) struct Field {
     pub(crate) key: String,
     pub(crate) doc_key: String,
     pub(crate) doc: String,
+    pub(crate) ty: Type,
     pub(crate) ty_display: String,
     pub(crate) default: Option<DefaultValue>,
     pub(crate) env: Option<String>,
@@ -45,17 +55,25 @@ pub(crate) struct Field {
     pub(crate) optional: bool,
     pub(crate) nested: Option<NestedField>,
     pub(crate) required: bool,
+    /// `#[serde(skip)]`: not configuration. A partial still has to build the field.
+    pub(crate) skip: bool,
+    /// `#[serde(default)]` on the field or the struct, with no const `default`.
+    pub(crate) serde_default: bool,
 }
 
 /// The whole section.
 pub(crate) struct Section {
     pub(crate) ident: Ident,
+    pub(crate) vis: Visibility,
     pub(crate) generics: Generics,
+    pub(crate) shape: StructShape,
     pub(crate) krate: syn::Path,
     pub(crate) section: Option<String>,
     pub(crate) version: Option<u32>,
     pub(crate) env_prefix: Option<String>,
     pub(crate) deny_unknown: bool,
+    pub(crate) getter: bool,
+    pub(crate) partial: bool,
     pub(crate) doc: String,
     pub(crate) fields: Vec<Field>,
 }
@@ -63,10 +81,14 @@ pub(crate) struct Section {
 impl Section {
     pub(crate) fn from_input(input: &DeriveInput) -> syn::Result<Self> {
         let mut errors = Errors::default();
+        let mut shape = StructShape::Named;
         let named = match &input.data {
             Data::Struct(data) => match &data.fields {
                 Fields::Named(fields) => Some(&fields.named),
-                Fields::Unit => None,
+                Fields::Unit => {
+                    shape = StructShape::Unit;
+                    None
+                }
                 Fields::Unnamed(fields) => {
                     errors.add(
                         fields.span(),
@@ -129,6 +151,7 @@ impl Section {
                         "this field is skipped by serde, so `config` attributes have no effect",
                     );
                 }
+                fields.push(Field::skipped(ident, field.ty.clone()));
                 continue;
             }
             if let Some(span) = attrs.skip {
@@ -155,12 +178,16 @@ impl Section {
             .map_or_else(|| syn::parse_quote!(::cgp_config), |krate| krate.value);
         errors.finish(Self {
             ident: input.ident.clone(),
+            vis: input.vis.clone(),
             generics: input.generics.clone(),
+            shape,
             krate,
             section: container.section.map(|s| s.value),
             version: container.version.map(|v| v.value),
             env_prefix: container.env_prefix.map(|p| p.value),
             deny_unknown: container.deny_unknown.is_some() || serde.deny_unknown_fields,
+            getter: container.getter.is_some(),
+            partial: container.partial.is_some(),
             doc: doc(&input.attrs),
             fields,
         })
@@ -309,13 +336,14 @@ impl Section {
             key,
             doc_key,
             doc: doc(&field.attrs),
+            ty: field.ty.clone(),
             ty_display: ty::display(&field.ty),
             default: attrs.default.map(|d| d.value),
             env: attrs.env.map(|e| e.value),
             env_raw: attrs.env_raw.map(|e| e.value),
             aliases: attrs.aliases.into_iter().map(|a| a.value).collect(),
             deprecated: attrs.deprecated.map(|d| d.value),
-            secret: attrs.secret.is_some(),
+            secret: attrs.secret.is_some() || ty::is_secret_container(&field.ty),
             restart: attrs.reload.is_some_and(|r| r.value == "restart"),
             merge: attrs.merge.map(|m| m.value),
             interpolate: attrs.interpolate.is_some(),
@@ -324,6 +352,41 @@ impl Section {
             optional,
             nested,
             required,
+            skip: false,
+            serde_default: serde_field.default || serde.default,
+            ident,
+        }
+    }
+}
+
+impl Field {
+    /// A field serde does not read. Kept so a partial can still construct the struct.
+    fn skipped(ident: Ident, ty: Type) -> Self {
+        let name = ident.to_string();
+        let name = name.strip_prefix("r#").unwrap_or(&name).to_owned();
+        Self {
+            name: name.clone(),
+            key: name.clone(),
+            doc_key: name,
+            doc: String::new(),
+            ty,
+            ty_display: String::new(),
+            default: None,
+            env: None,
+            env_raw: None,
+            aliases: Vec::new(),
+            deprecated: None,
+            secret: false,
+            restart: false,
+            merge: None,
+            interpolate: false,
+            parse: None,
+            flatten: false,
+            optional: false,
+            nested: None,
+            required: false,
+            skip: true,
+            serde_default: false,
             ident,
         }
     }
@@ -357,7 +420,7 @@ fn any_config_attr(attrs: &FieldAttrs, include_skip: bool) -> Option<Span> {
 fn check_unique(fields: &[Field], errors: &mut Errors) {
     let mut keys: Vec<(&str, &Ident)> = Vec::new();
     let mut env_names: Vec<(&str, &str, &Ident)> = Vec::new();
-    for field in fields.iter().filter(|field| !field.flatten) {
+    for field in fields.iter().filter(|field| !field.flatten && !field.skip) {
         for key in
             core::iter::once(field.doc_key.as_str()).chain(field.aliases.iter().map(String::as_str))
         {

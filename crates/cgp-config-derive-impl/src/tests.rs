@@ -7,6 +7,18 @@ fn expand(input: proc_macro2::TokenStream) -> String {
 }
 
 #[test]
+fn a_secret_type_is_secret_without_the_attribute() {
+    let out = expand(quote! {
+        struct App {
+            password: Secret<String>,
+            token: Option<Vec<Box<LazySecret<String>>>>,
+            name: String,
+        }
+    });
+    assert_eq!(out.matches("with_secret (true)").count(), 2, "{out}");
+}
+
+#[test]
 fn emits_meta_and_validation() {
     let out = expand(quote! {
         /// The app.
@@ -203,4 +215,31 @@ fn rename_rules_must_agree() {
         struct S { a_b: u8 }
     });
     assert!(out.contains("\"a-b\""), "{out}");
+}
+
+#[test]
+fn getter_and_partial_are_opt_in() {
+    let plain = expand(quote! {
+        struct HttpConfig {
+            port: u16,
+        }
+    });
+    assert!(!plain.contains("HasHttpConfig"), "{plain}");
+    assert!(!plain.contains("HttpConfigPartial"), "{plain}");
+
+    let out = expand(quote! {
+        #[config(getter, partial)]
+        struct HttpConfig {
+            /// Port to bind.
+            #[config(default = 8080)]
+            port: u16,
+            host: String,
+        }
+    });
+    assert!(out.contains("trait HasHttpConfig"), "{out}");
+    assert!(out.contains("fn http_config"), "{out}");
+    assert!(out.contains("struct HttpConfigPartial"), "{out}");
+    assert!(out.contains("FinalizeOptionalAll"), "{out}");
+    assert!(out.contains("missing . push (\"host\")"), "{out}");
+    assert!(!out.contains("push (\"port\")"), "{out}");
 }
